@@ -17,3 +17,12 @@ Thumbs.db
 # 诊断工具打包产物
 dist_diag/
 build_diag/
+
+# 本地语音模型（228MB，随安装包分发，不入库）
+models/
+
+# 安装包产物
+installer/
+
+# 构建工具（Inno Setup 安装器太大不入库，语言文件保留跟踪）
+tools/innosetup-*.exe

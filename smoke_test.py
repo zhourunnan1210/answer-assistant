@@ -123,6 +123,29 @@ assert w1[:4] == b"RIFF" and audio_capture.merge_wavs([w1, w1])[44:] == w1[44:] 
 snap2 = dlg._snapshot()
 assert "asr_api_key" in snap2 and "qa_prompt" in snap2, "设置快照缺少问答助手字段"
 print("✓ 问答助手链路就位（采集/识别/问答/配置）")
+
+# 9. 本地语音识别：SenseVoice + sherpa-onnx 离线链路
+import asr_local
+assert "asr_source" in cfg2.data, "配置缺少 asr_source 字段"
+assert cfg2.data["asr_source"] in ("local", "cloud")
+snap3 = dlg._snapshot()
+assert "asr_source" in snap3, "设置快照缺少 asr_source"
+assert hasattr(dlg, "asr_src_local") and hasattr(dlg, "asr_src_cloud")
+assert hasattr(dlg, "asr_local_status"), "本地模型状态标签缺失"
+assert asr_local.model_ready(), "本地模型文件缺失：" + asr_local.model_dir()
+assert callable(llm.asr_use_local)
+# 分流：local 走 sherpa-onnx 离线推理，cloud 走 HTTP（此处验证本地路径）
+local_cfg = dict(cfg2.data)
+local_cfg["asr_source"] = "local"
+import time as _t
+_t0 = _t.time()
+txt = llm.transcribe_audio(local_cfg, audio_capture.test_tone_wav())
+_elapsed = _t.time() - _t0
+assert isinstance(txt, str), "本地识别应返回字符串"
+assert _elapsed < 10, f"本地识别过慢：{_elapsed:.1f}s"
+msg = llm.test_asr(local_cfg)
+assert "本地模型就绪" in msg, msg
+print(f"✓ 本地语音识别链路就位（测试音识别耗时 {_elapsed:.2f}s）")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

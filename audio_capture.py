@@ -14,9 +14,9 @@ CAPTURE_RATE = 48000   # 回环采集采样率（WASAPI 混音格式常见值）
 TARGET_RATE = 16000    # Whisper/SenseVoice 等 ASR 的标准输入
 BLOCK_MS = 100         # 每次读取 100ms
 SILENCE_RMS = 0.008    # 静音能量阈值（float32 RMS）
-SILENCE_HOLD = 0.8     # 连续静音 0.8s 视为一句结束
+SILENCE_HOLD = 0.6     # 连续静音 0.6s 视为一句结束（缩短以加快响应）
 MIN_UTTERANCE = 0.6    # 短于 0.6s 的声音丢弃（咳嗽/敲桌等杂音）
-MAX_UTTERANCE = 15.0   # 单段上限，防止无限累积
+MAX_UTTERANCE = 8.0    # 单段上限：短句识别更快，避免长音频排队
 
 
 def pcm_to_wav(pcm_int16: bytes, rate: int = TARGET_RATE) -> bytes:

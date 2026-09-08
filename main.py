@@ -17,9 +17,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QMenu,
                                QMessageBox, QInputDialog, QPlainTextEdit,
-                               QPushButton, QSizeGrip, QSlider, QSpinBox,
-                               QStackedWidget, QSystemTrayIcon, QTextEdit,
-                               QVBoxLayout, QWidget)
+                               QPushButton, QRadioButton, QSizeGrip, QSlider,
+                               QSpinBox, QStackedWidget, QSystemTrayIcon,
+                               QTextEdit, QVBoxLayout, QWidget)
 
 from config import AppConfig, DEFAULT_PROMPT, QA_PROMPT
 from audio_capture import LoopbackCapture, merge_wavs
@@ -556,6 +556,29 @@ class SettingsDialog(QDialog):
         qa_note.setStyleSheet("color:#8fb8ff; font-size:11px;")
         form_qa.addRow("", qa_note)
 
+        # ---- 语音识别来源：本地模型 / 云端 API ----
+        src_row = QHBoxLayout()
+        self.asr_src_local = QRadioButton("本地模型（离线、毫秒级、免 Key，推荐）")
+        self.asr_src_cloud = QRadioButton("云端 API（需联网和 Key）")
+        if cfg.data.get("asr_source", "local") == "cloud":
+            self.asr_src_cloud.setChecked(True)
+        else:
+            self.asr_src_local.setChecked(True)
+        src_row.addWidget(self.asr_src_local)
+        src_row.addWidget(self.asr_src_cloud)
+        src_row.addStretch()
+        form_qa.addRow("识别来源", src_row)
+
+        import asr_local as _al
+        ready = _al.model_ready()
+        self.asr_local_status = QLabel(
+            ("✅ 本地模型已就绪：" if ready else "❌ 未找到模型文件：")
+            + _al.model_dir())
+        self.asr_local_status.setWordWrap(True)
+        self.asr_local_status.setStyleSheet(
+            ("color:#7fd08a;" if ready else "color:#e07878;") + " font-size:11px;")
+        form_qa.addRow("", self.asr_local_status)
+
         self.asr_same = QCheckBox("与答题模型同服务商（复用 Base URL 和 Key）")
         self.asr_same.setToolTip(
             "问答模式的「回答」始终使用答题模型，无需设置；\n"
@@ -584,8 +607,10 @@ class SettingsDialog(QDialog):
         asr_model_row.addWidget(self.asr_test_btn)
         form_qa.addRow("ASR 模型", asr_model_row)
 
-        asr_hint = QLabel("语音识别推荐 SiliconFlow 的 SenseVoice（中文快且准，"
-                          "有免费额度），或 OpenAI whisper-1 等 Whisper 兼容服务。")
+        asr_hint = QLabel("本地模型：阿里通义 SenseVoice（中英日韩粤），随安装包附带，"
+                          "完全离线、零延迟；\n云端 API：推荐 SiliconFlow 的 "
+                          "FunAudioLLM/SenseVoiceSmall（免费档偶有冷启动超时，会自动重试），"
+                          "也支持 OpenAI whisper-1 等 Whisper 兼容服务。")
         asr_hint.setWordWrap(True)
         asr_hint.setStyleSheet("color:#9aa3b2; font-size:11px;")
         form_qa.addRow("", asr_hint)
@@ -594,11 +619,21 @@ class SettingsDialog(QDialog):
         self.qa_prompt.setFixedHeight(110)
         form_qa.addRow("问答提示词", self.qa_prompt)
 
-        def _sync_asr_fields(checked):
+        def _sync_asr_fields(*_args):
+            local = self.asr_src_local.isChecked()
+            # 本地模式：云端字段全部禁用；云端模式：按「同服务商」勾选联动
+            for w in (self.asr_same, self.asr_model):
+                w.setEnabled(not local)
             for w in (self.asr_base_url, self.asr_api_key):
-                w.setEnabled(not checked)
+                w.setEnabled(not local and not self.asr_same.isChecked())
+            self.asr_local_status.setVisible(local)
+            self.asr_test_btn.setToolTip(
+                "本地模式：加载模型并识别一段测试音，验证本地识别链路"
+                if local else "向 ASR 服务发送一段 0.8 秒测试音，验证连通性")
+        self.asr_src_local.toggled.connect(_sync_asr_fields)
+        self.asr_src_cloud.toggled.connect(_sync_asr_fields)
         self.asr_same.toggled.connect(_sync_asr_fields)
-        _sync_asr_fields(self.asr_same.isChecked())
+        _sync_asr_fields()
 
         # ================= 页 3：通用 =================
         page_gen = QWidget()
@@ -671,11 +706,17 @@ class SettingsDialog(QDialog):
 
     def _test_asr(self):
         snap = self._snapshot()
-        has_key = bool(snap.get("asr_api_key")) or (
-            snap.get("asr_use_same_key") and snap.get("api_key"))
-        if not has_key:
-            self.test_result.setText("❌ 请先填写语音识别 API Key")
-            return
+        if snap.get("asr_source", "local") == "local":
+            import asr_local
+            if not asr_local.model_ready():
+                self.test_result.setText("❌ 未找到本地语音模型：" + asr_local.model_dir())
+                return
+        else:
+            has_key = bool(snap.get("asr_api_key")) or (
+                snap.get("asr_use_same_key") and snap.get("api_key"))
+            if not has_key:
+                self.test_result.setText("❌ 请先填写语音识别 API Key")
+                return
         self.asr_test_btn.setEnabled(False)
         self.test_result.setText("正在测试语音识别（发送 0.8 秒测试音）…")
         self._asr_test_thread = FuncThread(lambda: test_asr(snap), self)
@@ -769,6 +810,7 @@ class SettingsDialog(QDialog):
             "font_size": self.font_size.value(),
             "window_opacity": self.opacity.value() / 100,
             "qa_prompt": self.qa_prompt.toPlainText().strip() or QA_PROMPT,
+            "asr_source": ("local" if self.asr_src_local.isChecked() else "cloud"),
             "asr_use_same_key": self.asr_same.isChecked(),
             "asr_base_url": self.asr_base_url.text().strip(),
             "asr_api_key": self.asr_api_key.text().strip(),
@@ -1177,12 +1219,19 @@ class MainWindow(QWidget):
     def _toggle_qa(self, on: bool):
         if on:
             snap = self.cfg.data
-            has_key = bool(snap.get("asr_api_key")) or (
-                snap.get("asr_use_same_key") and snap.get("api_key"))
-            if not has_key:
-                self.status.setText("请先在 ⚙设置 的「问答助手」分组中配置语音识别服务")
-                self.qa_btn.setChecked(False)
-                return
+            if snap.get("asr_source", "local") == "local":
+                import asr_local
+                if not asr_local.model_ready():
+                    self.status.setText("未找到本地语音模型，请在设置中切换为云端 API")
+                    self.qa_btn.setChecked(False)
+                    return
+            else:
+                has_key = bool(snap.get("asr_api_key")) or (
+                    snap.get("asr_use_same_key") and snap.get("api_key"))
+                if not has_key:
+                    self.status.setText("请先在 ⚙设置 的「问答助手」分组中配置语音识别服务")
+                    self.qa_btn.setChecked(False)
+                    return
             self._qa_pending_text = []
             self._pending_wavs = []
             self.answer.clear()
@@ -1195,6 +1244,11 @@ class MainWindow(QWidget):
             self._cap_thread = LoopbackCapture(
                 self._qa_bridge.utterance.emit, self._qa_bridge.cap_error.emit)
             self._cap_thread.start()
+            if snap.get("asr_source", "local") == "local":
+                # 后台预热本地模型（加载约 1.2s），避免第一句识别卡顿
+                import threading as _th
+                import asr_local
+                _th.Thread(target=asr_local.warmup, daemon=True).start()
             self.status.setText("问答模式：监听系统声音中…")
         else:
             self._stop_capture()

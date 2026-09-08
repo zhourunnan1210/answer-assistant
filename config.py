@@ -44,7 +44,8 @@ DEFAULTS = {
     "profiles": {},                      # 我的预设：{名称: {provider, base_url, api_key, model, thinking}}
     # ---- 问答助手（语音识别 + 文本问答）----
     "qa_prompt": QA_PROMPT,              # 问答专用提示词
-    "asr_use_same_key": False,           # 语音识别是否复用答题服务商
+    "asr_source": "local",               # 语音识别来源：local（本地模型，推荐）| cloud（云端 API）
+    "asr_use_same_key": False,           # 云端模式：语音识别是否复用答题服务商
     "asr_base_url": "https://api.siliconflow.cn/v1",
     "asr_api_key": "",
     "asr_model": "FunAudioLLM/SenseVoiceSmall",

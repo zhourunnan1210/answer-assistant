@@ -191,26 +191,66 @@ def _asr_config(cfg: dict):
     return base, key, model
 
 
+def asr_use_local(cfg: dict) -> bool:
+    """当前配置的语音识别来源是否为本地模型。"""
+    return cfg.get("asr_source", "local") == "local"
+
+
 def transcribe_audio(cfg: dict, wav_bytes: bytes) -> str:
-    """OpenAI Whisper 兼容的语音识别：POST {base}/audio/transcriptions（multipart）。
-    支持 OpenAI whisper-1、SiliconFlow 的 SenseVoice 等。返回识别文本。"""
+    """语音识别入口：按 asr_source 分流到本地 SenseVoice 或云端 Whisper 兼容 API。
+
+    本地模式（默认）：sherpa-onnx 离线推理，零网络、免 Key、毫秒级响应。
+    云端模式：POST {base}/audio/transcriptions（multipart），支持 OpenAI
+    whisper-1、SiliconFlow 的 SenseVoice 等。免费档 ASR 服务常有冷启动/排队
+    导致的超时，网络层错误自动重试 3 次，单次请求超时压到 25s。"""
+    if asr_use_local(cfg):
+        import asr_local
+        try:
+            return asr_local.transcribe_local(wav_bytes)
+        except asr_local.LocalAsrError as e:
+            raise LlmError(str(e))
+    import time as _time
     base, key, model = _asr_config(cfg)
-    resp = requests.post(
-        base + "/audio/transcriptions",
-        headers={"Authorization": f"Bearer {key}"},
-        files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-        data={"model": model},
-        timeout=60)
-    _check(resp)
-    try:
-        return (resp.json().get("text") or "").strip()
-    except Exception:
-        raise LlmError(f"无法解析识别结果: {resp.text[:200]}")
+    last_err = "未知错误"
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                base + "/audio/transcriptions",
+                headers={"Authorization": f"Bearer {key}"},
+                files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+                data={"model": model},
+                timeout=25)
+            if resp.status_code >= 500:  # 服务端错误也重试
+                last_err = f"HTTP {resp.status_code}: {_err_body(resp)}"
+                _time.sleep(1 + attempt)
+                continue
+            _check(resp)
+            try:
+                return (resp.json().get("text") or "").strip()
+            except Exception:
+                raise LlmError(f"无法解析识别结果: {resp.text[:200]}")
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as e:
+            last_err = f"{type(e).__name__}: {e}"
+            _time.sleep(1 + attempt)
+    raise LlmError(f"语音识别服务连接失败（已自动重试 3 次）：{last_err}")
 
 
 def test_asr(cfg: dict) -> str:
-    """向 ASR 服务发送一段 0.8 秒测试音，验证语音识别链路连通性。"""
+    """验证语音识别链路：本地模式加载模型并识别测试音；云端模式发送 0.8 秒测试音。"""
     from audio_capture import test_tone_wav
+    if asr_use_local(cfg):
+        import asr_local
+        if not asr_local.model_ready():
+            raise LlmError("未找到本地语音模型（" + asr_local.model_dir() + "）")
+        import time as _t
+        t0 = _t.time()
+        asr_local.warmup()
+        load_s = _t.time() - t0
+        t0 = _t.time()
+        asr_local.transcribe_local(test_tone_wav())
+        infer_s = _t.time() - t0
+        return f"本地模型就绪（加载 {load_s:.1f}s，推理 {infer_s:.2f}s，完全离线）"
     text = transcribe_audio(cfg, test_tone_wav())
     return text or "服务连通正常（测试音无语音内容，识别结果为空）"
 

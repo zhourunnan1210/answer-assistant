@@ -9,6 +9,7 @@
 
 - 📷 **区域截图识别**：首次框选一个固定区域，之后每次识别都自动截取该区域
 - 🎙 **问答助手模式**：监听电脑音频输出（会议中对方的讲话），实时语音转文字，一键生成口语化回答
+- 🗣 **本地语音识别**：内置阿里通义开源 SenseVoice 模型（随安装包附带），**完全离线、免 Key、毫秒级响应**；也可切换为云端 Whisper 兼容 API
 - 🤖 **多供应商支持**：OpenAI 兼容格式（Kimi / DeepSeek / 通义千问 / GPT-4o 等）与 Anthropic（Claude）格式
 - 📋 **一键获取模型列表**：填好 Base URL 和 Key 后点一下即可拉取该供应商的全部模型，不用手填
 - 🧠 **思考模式**：默认开启，支持 Kimi K2 / Claude 等推理模型，更准但稍慢
@@ -20,11 +21,13 @@
 
 ## 快速开始
 
-### 方式一：直接运行（推荐给普通用户）
+### 方式一：安装包（推荐给普通用户）
 
-1. 从 Releases 下载 `答题助手.exe`
-2. 双击运行，首次打开先点标题栏 **⚙** 完成模型配置（见下文）
+1. 从 Releases 下载 `answer-assistant-setup-vX.X.X.exe` 并运行（与大多数软件一样的中文安装向导，**免管理员权限**，默认装到用户目录）
+2. 安装后从开始菜单或桌面快捷方式启动，首次打开先点标题栏 **⚙** 完成模型配置（见下文）
 3. 点击「▣ 框选区域」框住题目区域，之后点「🔍 识别本题」或按快捷键即可
+
+安装包已内置本地语音识别模型，问答助手开箱即用、无需联网。
 
 ### 方式二：源码运行（推荐给开发者）
 
@@ -34,6 +37,7 @@ python main.py
 ```
 
 要求：Windows 10 2004 及以上，Python 3.10+。
+源码运行如需本地语音识别，请下载 [SenseVoice int8 模型](https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) 中的 `model.int8.onnx` 与 `tokens.txt`，放到 `models/sense-voice/` 目录下（不下载则会提示改用云端 API）。
 
 ## 配置教程（以 Kimi 为例）
 
@@ -61,7 +65,7 @@ python main.py
 | 识别快捷键 | 触发「识别本题」的全局快捷键 |
 | 答案字号 | 答案区文字大小（10~28 px） |
 | 窗口不透明度 | 50%~100% |
-| 问答助手分组 | 语音识别服务（Base URL / Key / 模型）与问答专用提示词 |
+| 问答助手分组 | 语音识别来源（本地模型/云端 API）、云端 ASR 参数与问答专用提示词 |
 
 ## 使用教程
 
@@ -84,15 +88,19 @@ python main.py
 
 适用场景：腾讯会议 / 浏览器会议中的问答环节，对方口头提问时帮你快速组织回答。
 
-1. **配置语音识别**：打开 ⚙设置 →「问答助手」分组，填 ASR 服务的 Base URL + Key + 模型
+1. **选择识别来源**：打开 ⚙设置 →「问答助手」分组。**默认使用内置本地模型**
+   （阿里通义开源 SenseVoice，支持中英日韩粤，完全离线、免 Key、毫秒级响应，
+   安装包已自带，无需任何配置）；如需改用云端服务，把「识别来源」切到
+   **云端 API**，填 ASR 服务的 Base URL + Key + 模型
    （推荐 SiliconFlow 的 `FunAudioLLM/SenseVoiceSmall`，中文快且准，有免费额度；
-   若答题服务商本身提供 Whisper 接口，可勾选「使用与答题相同的服务商」）
-2. **开启监听**：点底部「🎙 问答」，助手开始监听电脑的声音输出（只采系统输出，
+   若答题服务商本身提供 Whisper 接口，可勾选「与答题模型同服务商」）
+2. **测试**：点「测试语音识别」验证所选来源的识别链路
+3. **开启监听**：点底部「🎙 问答」，助手开始监听电脑的声音输出（只采系统输出，
    不采麦克风；戴耳机同样有效）
-3. **实时转写**：识别到的讲话以灰色「听到：…」滚动显示在答案区
-4. **生成回答**：听到问题后按 `Ctrl+Alt+W`（或点「💬 回答刚才的问题」），
+4. **实时转写**：识别到的讲话以灰色「听到：…」滚动显示在答案区
+5. **生成回答**：听到问题后按 `Ctrl+Alt+W`（或点「💬 回答刚才的问题」），
    答案区会显示口语化、分点的回答，照着念即可
-5. 再点一次「🎙 问答」关闭监听
+6. 再点一次「🎙 问答」关闭监听
 
 问答助手使用独立的「问答提示词」（设置中可改），与截图答题的提示词互不影响。
 
@@ -125,7 +133,20 @@ python main.py
 python -m PyInstaller --noconfirm --clean build.spec
 ```
 
-产物在 `dist/` 目录。注意：**必须使用 `build.spec`** 而不是直接 `pyinstaller main.py`——spec 中强制使用 Python 自带的 OpenSSL DLL，否则在装有 Git for Windows 的机器上打包可能混入不兼容的 DLL，导致 HTTPS 全部报 "SSL module is not available"。
+产物在 `dist/答题助手/` 目录（onedir 目录版，`答题助手.exe` + `_internal`）。
+注意：**必须使用 `build.spec`** 而不是直接 `pyinstaller main.py`——spec 中强制使用 Python 自带的 OpenSSL DLL，否则在装有 Git for Windows 的机器上打包可能混入不兼容的 DLL，导致 HTTPS 全部报 "SSL module is not available"。
+
+### 制作安装包
+
+1. 安装 [Inno Setup 6.5+](https://jrsoftware.org/isdl.php)
+2. 把 `models/sense-voice/`（模型文件）复制到 `dist/答题助手/models/` 下
+3. 编译脚本：
+
+```bash
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+```
+
+产物在 `installer/answer-assistant-setup-vX.X.X.exe`（安装到用户目录，免管理员权限，含卸载程序；`config.json` 不会被打入安装包）。
 
 打包前可先跑冒烟测试：
 
@@ -145,11 +166,17 @@ python smoke_test.py
 
 ```
 ├── main.py           # 主窗口、区域框选、全局快捷键、托盘、设置对话框、问答模式
-├── llm.py            # 多模态调用（OpenAI 兼容 / Anthropic）、模型列表、语音识别
+├── llm.py            # 多模态调用（OpenAI 兼容 / Anthropic）、模型列表、语音识别分流
 ├── audio_capture.py  # 系统输出回环采集（WASAPI loopback）+ 静音断句
+├── asr_local.py      # 本地语音识别：SenseVoice + sherpa-onnx 离线推理
 ├── config.py         # 配置读写（config.json，与 exe 同目录）
 ├── smoke_test.py     # 离屏冒烟测试
-├── build.spec        # PyInstaller 打包配置
+├── build.spec        # PyInstaller 打包配置（onedir）
+├── installer.iss     # Inno Setup 安装包脚本
+├── tools/
+│   └── ChineseSimplified.isl  # Inno Setup 简体中文语言文件
+├── models/
+│   └── sense-voice/  # 本地语音模型（.gitignore，随安装包分发）
 └── docs/
     ├── images/       # README 截图
     └── focus-test.html  # 切出检测/共享隐身自测页
