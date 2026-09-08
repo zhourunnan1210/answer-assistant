@@ -208,6 +208,13 @@ def transcribe_audio(cfg: dict, wav_bytes: bytes) -> str:
         raise LlmError(f"无法解析识别结果: {resp.text[:200]}")
 
 
+def test_asr(cfg: dict) -> str:
+    """向 ASR 服务发送一段 0.8 秒测试音，验证语音识别链路连通性。"""
+    from audio_capture import test_tone_wav
+    text = transcribe_audio(cfg, test_tone_wav())
+    return text or "服务连通正常（测试音无语音内容，识别结果为空）"
+
+
 def test_connection(cfg: dict) -> str:
     """纯文本连通性测试，返回模型回复的前 80 个字符。"""
     if not cfg.get("api_key"):

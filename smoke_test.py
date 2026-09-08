@@ -110,6 +110,11 @@ print("✓ 快捷键分发/提示区说明就位（多行以灰色正文渲染�
 # 8. 问答助手：UI、配置、接口、音频模块
 assert hasattr(win, "qa_btn") and hasattr(win, "qa_answer_btn")
 assert callable(llm.transcribe_audio) and callable(llm.ask_text)
+assert callable(llm.test_asr), "ASR 连通性测试缺失"
+assert "prompt" in win.PROFILE_KEYS and "qa_prompt" in win.PROFILE_KEYS, \
+    "预设应包含两种提示词"
+assert hasattr(dlg, "nav") and hasattr(dlg, "pages"), "设置页卡片切换缺失"
+assert hasattr(dlg, "asr_test_btn"), "ASR 测试按钮缺失"
 assert "qa_prompt" in cfg2.data and "asr_model" in cfg2.data
 assert "asr_use_same_key" in cfg2.data and "asr_base_url" in cfg2.data
 import audio_capture

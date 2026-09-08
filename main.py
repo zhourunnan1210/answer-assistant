@@ -15,17 +15,16 @@ from PySide6.QtGui import (QColor, QGuiApplication, QIcon, QImage, QPainter,
                            QPen, QPixmap)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFormLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QMenu, QMessageBox,
-                               QInputDialog,
-                               QPlainTextEdit,
+                               QLabel, QLineEdit, QListWidget, QMenu,
+                               QMessageBox, QInputDialog, QPlainTextEdit,
                                QPushButton, QSizeGrip, QSlider, QSpinBox,
-                               QSystemTrayIcon, QTextEdit, QVBoxLayout,
-                               QWidget)
+                               QStackedWidget, QSystemTrayIcon, QTextEdit,
+                               QVBoxLayout, QWidget)
 
 from config import AppConfig, DEFAULT_PROMPT, QA_PROMPT
 from audio_capture import LoopbackCapture, merge_wavs
 from llm import (AUTO_PROMPT, ask_text, ask_vision, fetch_models,
-                 test_connection, transcribe_audio)
+                 test_asr, test_connection, transcribe_audio)
 
 def combo_arrow_path() -> str:
     """运行时绘制下拉箭头小图标（深色背景下默认箭头几乎不可见），返回正斜杠路径。"""
@@ -200,6 +199,16 @@ QToolTip {
     background-color: #262a33; color: #e8eaf0;
     border: 1px solid rgba(255, 255, 255, 45); padding: 4px;
 }
+/* 设置对话框左侧导航栏 */
+QListWidget {
+    background: rgba(255, 255, 255, 10);
+    border: 1px solid rgba(255, 255, 255, 30);
+    border-radius: 8px; padding: 4px;
+    font-size: 12px; color: #cfd4de; outline: none;
+}
+QListWidget::item { padding: 8px 10px; border-radius: 6px; }
+QListWidget::item:selected { background: rgba(90, 150, 250, 80); color: #ffffff; }
+QListWidget::item:hover:!selected { background: rgba(255, 255, 255, 20); }
 """
 
 
@@ -457,12 +466,14 @@ class SettingsDialog(QDialog):
     def __init__(self, cfg: AppConfig, parent=None):
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(600)
         self.cfg = cfg
 
-        form = QFormLayout()
+        # ================= 页 1：答题模型 =================
+        page_model = QWidget()
+        form = QFormLayout(page_model)
         form.setSpacing(10)
-        form.setContentsMargins(0, 0, 0, 0)
+        form.setContentsMargins(4, 4, 4, 4)
 
         # 我的预设：保存/切换整套模型配置
         prof_row = QHBoxLayout()
@@ -523,40 +534,65 @@ class SettingsDialog(QDialog):
         form.addRow("", hint)
 
         self.prompt = QPlainTextEdit(cfg.prompt or DEFAULT_PROMPT)
-        self.prompt.setFixedHeight(110)
+        self.prompt.setFixedHeight(130)
         form.addRow("提示词", self.prompt)
 
-        # ---- 问答助手（语音识别 + 口头问答）----
-        qa_title = QLabel("—— 问答助手（会议问答：听声音 → 生成口语化回答）——")
-        qa_title.setStyleSheet("color:#8fb8ff; font-weight:bold;")
-        form.addRow(qa_title)
+        self.test_btn = QPushButton("测试连接", objectName="primary")
+        self.test_btn.clicked.connect(self._test)
+        test_row = QHBoxLayout()
+        test_row.addWidget(self.test_btn)
+        test_row.addStretch()
+        form.addRow("", test_row)
 
-        self.asr_same = QCheckBox("语音识别使用与答题相同的服务商（Base URL + Key）")
+        # ================= 页 2：问答助手 =================
+        page_qa = QWidget()
+        form_qa = QFormLayout(page_qa)
+        form_qa.setSpacing(10)
+        form_qa.setContentsMargins(4, 4, 4, 4)
+
+        qa_note = QLabel("问答模式的「回答」始终由答题模型生成；"
+                         "本页配置的是「语音识别」服务（把讲话转成文字）。")
+        qa_note.setWordWrap(True)
+        qa_note.setStyleSheet("color:#8fb8ff; font-size:11px;")
+        form_qa.addRow("", qa_note)
+
+        self.asr_same = QCheckBox("与答题模型同服务商（复用 Base URL 和 Key）")
+        self.asr_same.setToolTip(
+            "问答模式的「回答」始终使用答题模型，无需设置；\n"
+            "本选项只决定「语音识别」服务是否也走同一家服务商。\n"
+            "仅当答题服务商同时提供语音识别接口时勾选（如 SiliconFlow）；\n"
+            "Kimi、DeepSeek 等没有语音识别接口，请不要勾选。")
         self.asr_same.setChecked(bool(cfg.data.get("asr_use_same_key", False)))
-        form.addRow("语音识别", self.asr_same)
+        form_qa.addRow("语音识别", self.asr_same)
 
         self.asr_base_url = QLineEdit(cfg.data.get("asr_base_url", ""))
         self.asr_base_url.setPlaceholderText("如 https://api.siliconflow.cn/v1")
-        form.addRow("ASR Base URL", self.asr_base_url)
+        form_qa.addRow("ASR Base URL", self.asr_base_url)
 
         self.asr_api_key = QLineEdit(cfg.data.get("asr_api_key", ""))
         self.asr_api_key.setEchoMode(QLineEdit.Password)
-        form.addRow("ASR API Key", self.asr_api_key)
+        form_qa.addRow("ASR API Key", self.asr_api_key)
 
+        asr_model_row = QHBoxLayout()
         self.asr_model = QLineEdit(cfg.data.get("asr_model", ""))
         self.asr_model.setPlaceholderText(
             "如 FunAudioLLM/SenseVoiceSmall 或 whisper-1")
-        form.addRow("ASR 模型", self.asr_model)
+        self.asr_test_btn = QPushButton("测试语音识别")
+        self.asr_test_btn.setToolTip("向 ASR 服务发送一段 0.8 秒测试音，验证连通性")
+        self.asr_test_btn.clicked.connect(self._test_asr)
+        asr_model_row.addWidget(self.asr_model, stretch=1)
+        asr_model_row.addWidget(self.asr_test_btn)
+        form_qa.addRow("ASR 模型", asr_model_row)
 
         asr_hint = QLabel("语音识别推荐 SiliconFlow 的 SenseVoice（中文快且准，"
                           "有免费额度），或 OpenAI whisper-1 等 Whisper 兼容服务。")
         asr_hint.setWordWrap(True)
         asr_hint.setStyleSheet("color:#9aa3b2; font-size:11px;")
-        form.addRow("", asr_hint)
+        form_qa.addRow("", asr_hint)
 
         self.qa_prompt = QPlainTextEdit(cfg.data.get("qa_prompt") or QA_PROMPT)
-        self.qa_prompt.setFixedHeight(90)
-        form.addRow("问答提示词", self.qa_prompt)
+        self.qa_prompt.setFixedHeight(110)
+        form_qa.addRow("问答提示词", self.qa_prompt)
 
         def _sync_asr_fields(checked):
             for w in (self.asr_base_url, self.asr_api_key):
@@ -564,24 +600,29 @@ class SettingsDialog(QDialog):
         self.asr_same.toggled.connect(_sync_asr_fields)
         _sync_asr_fields(self.asr_same.isChecked())
 
+        # ================= 页 3：通用 =================
+        page_gen = QWidget()
+        form_gen = QFormLayout(page_gen)
+        form_gen.setSpacing(10)
+        form_gen.setContentsMargins(4, 4, 4, 4)
+
+        # 监控模式已下线：interval 控件仅保留以兼容配置快照，不加入任何页面
         self.interval = QSpinBox()
         self.interval.setRange(1, 10)
         self.interval.setSuffix(" 秒")
         self.interval.setValue(max(1, round(cfg.monitor_interval_ms / 1000)))
-        # 监控模式已下线，该行暂不显示（控件保留以兼容配置快照）
-        # form.addRow("监控间隔", self.interval)
 
         self.hotkey = QComboBox()
         for k in HOTKEYS:
             self.hotkey.addItem(k)
         self.hotkey.setCurrentText(getattr(cfg, "hotkey", "Ctrl+Alt+Q"))
-        form.addRow("识别快捷键", self.hotkey)
+        form_gen.addRow("识别快捷键", self.hotkey)
 
         self.font_size = QSpinBox()
         self.font_size.setRange(10, 28)
         self.font_size.setSuffix(" px")
         self.font_size.setValue(int(getattr(cfg, "font_size", 14)))
-        form.addRow("答案字号", self.font_size)
+        form_gen.addRow("答案字号", self.font_size)
 
         op_row = QHBoxLayout()
         self.opacity = QSlider(Qt.Horizontal)
@@ -592,13 +633,27 @@ class SettingsDialog(QDialog):
             lambda v: self.opacity_label.setText(f"{v}%"))
         op_row.addWidget(self.opacity)
         op_row.addWidget(self.opacity_label)
-        form.addRow("窗口不透明度", op_row)
+        form_gen.addRow("窗口不透明度", op_row)
+
+        # ================= 侧栏 + 卡片页 =================
+        self.pages = QStackedWidget()
+        self.pages.addWidget(page_model)
+        self.pages.addWidget(page_qa)
+        self.pages.addWidget(page_gen)
+
+        self.nav = QListWidget()
+        self.nav.addItems(["答题模型", "问答助手", "通用"])
+        self.nav.setFixedWidth(118)
+        self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.nav.setCurrentRow(0)
+
+        mid = QHBoxLayout()
+        mid.setSpacing(10)
+        mid.addWidget(self.nav)
+        mid.addWidget(self.pages, stretch=1)
 
         self.test_result = QLabel("")
         self.test_result.setWordWrap(True)
-
-        self.test_btn = QPushButton("测试连接", objectName="primary")
-        self.test_btn.clicked.connect(self._test)
 
         btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         btns.button(QDialogButtonBox.Save).setText("保存")
@@ -609,11 +664,29 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 14, 14, 14)
         lay.setSpacing(10)
-        lay.addLayout(form)
-        lay.addWidget(self.test_btn, alignment=Qt.AlignLeft)
+        lay.addLayout(mid, stretch=1)
         lay.addWidget(self.test_result)
         lay.addWidget(btns)
         self.setStyleSheet(_dialog_style())
+
+    def _test_asr(self):
+        snap = self._snapshot()
+        has_key = bool(snap.get("asr_api_key")) or (
+            snap.get("asr_use_same_key") and snap.get("api_key"))
+        if not has_key:
+            self.test_result.setText("❌ 请先填写语音识别 API Key")
+            return
+        self.asr_test_btn.setEnabled(False)
+        self.test_result.setText("正在测试语音识别（发送 0.8 秒测试音）…")
+        self._asr_test_thread = FuncThread(lambda: test_asr(snap), self)
+        self._asr_test_thread.done.connect(self._on_asr_test_done)
+        self._asr_test_thread.start()
+
+    def _on_asr_test_done(self, result, error):
+        self.asr_test_btn.setEnabled(True)
+        self.test_result.setText(
+            "❌ 语音识别测试失败：" + error if error
+            else f"✅ 语音识别服务连通：{result}")
 
     def _profiles(self) -> dict:
         return self.cfg.data.setdefault("profiles", {})
@@ -641,6 +714,11 @@ class SettingsDialog(QDialog):
         self.api_key.setText(p.get("api_key", ""))
         self.model.setCurrentText(p.get("model", ""))
         self.thinking.setChecked(bool(p.get("thinking", True)))
+        # 预设中的两种提示词一并载入（旧预设没有这些字段则保持现状）
+        if p.get("prompt"):
+            self.prompt.setPlainText(p["prompt"])
+        if p.get("qa_prompt"):
+            self.qa_prompt.setPlainText(p["qa_prompt"])
         self.test_result.setText(f"已载入预设「{name}」，点「保存」生效")
 
     def _save_profile(self):
@@ -654,6 +732,8 @@ class SettingsDialog(QDialog):
             "api_key": self.api_key.text().strip(),
             "model": self.model.currentText().strip(),
             "thinking": self.thinking.isChecked(),
+            "prompt": self.prompt.toPlainText().strip(),
+            "qa_prompt": self.qa_prompt.toPlainText().strip(),
         }
         self.cfg.save()  # 预设立即写入配置文件
         self._reload_profiles(select=name)
@@ -1195,12 +1275,15 @@ class MainWindow(QWidget):
 
     # ---- 预设快捷切换 ----
 
-    PROFILE_KEYS = ("provider", "base_url", "api_key", "model", "thinking")
+    PROFILE_KEYS = ("provider", "base_url", "api_key", "model", "thinking",
+                    "prompt", "qa_prompt")
 
     def _current_profile_name(self):
-        """当前配置与某个预设完全一致时返回预设名，否则返回 None。"""
+        """当前配置与某个预设一致时返回预设名，否则返回 None。
+        预设中缺失的字段（如旧版预设没有 prompt）视为匹配，向后兼容。"""
         for name, p in self.cfg.data.get("profiles", {}).items():
-            if all(self.cfg.data.get(k) == p.get(k) for k in self.PROFILE_KEYS):
+            if all(self.cfg.data.get(k) == p.get(k, self.cfg.data.get(k))
+                   for k in self.PROFILE_KEYS):
                 return name
         return None
 

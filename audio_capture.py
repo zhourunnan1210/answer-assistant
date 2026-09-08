@@ -33,6 +33,13 @@ def merge_wavs(wavs: list) -> bytes:
     return pcm_to_wav(b"".join(w[44:] for w in wavs))
 
 
+def test_tone_wav(duration: float = 0.8, freq: float = 440.0) -> bytes:
+    """生成一段 16kHz 正弦提示音（440Hz「嘟」声），用于 ASR 连通性测试。"""
+    t = np.arange(int(TARGET_RATE * duration)) / TARGET_RATE
+    pcm = (np.sin(2 * np.pi * freq * t) * 12000).astype(np.int16).tobytes()
+    return pcm_to_wav(pcm)
+
+
 class LoopbackCapture(threading.Thread):
     """后台线程：采集系统输出音频，每检测出一句完整语音就回调
     on_utterance(wav_bytes)；异常回调 on_error(msg)。"""
