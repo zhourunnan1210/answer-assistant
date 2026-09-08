@@ -8,7 +8,8 @@ from ctypes import wintypes
 from datetime import datetime
 
 from PySide6.QtCore import (Qt, QAbstractNativeEventFilter, QBuffer, QEvent,
-                            QIODevice, QPoint, QRect, QThread, QTimer, Signal)
+                            QIODevice, QObject, QPoint, QRect, QThread,
+                            QTimer, Signal)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import (QColor, QGuiApplication, QIcon, QImage, QPainter,
                            QPen, QPixmap)
@@ -21,8 +22,10 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QSystemTrayIcon, QTextEdit, QVBoxLayout,
                                QWidget)
 
-from config import AppConfig, DEFAULT_PROMPT
-from llm import AUTO_PROMPT, ask_vision, fetch_models, test_connection
+from config import AppConfig, DEFAULT_PROMPT, QA_PROMPT
+from audio_capture import LoopbackCapture, merge_wavs
+from llm import (AUTO_PROMPT, ask_text, ask_vision, fetch_models,
+                 test_connection, transcribe_audio)
 
 def combo_arrow_path() -> str:
     """运行时绘制下拉箭头小图标（深色背景下默认箭头几乎不可见），返回正斜杠路径。"""
@@ -312,6 +315,7 @@ HOTKEYS = {
 # 固定功能的快捷键（不与"识别快捷键"选项冲突）
 HOTKEY_CYCLE = (MOD_CONTROL | MOD_ALT, 0x53, "Ctrl+Alt+S")  # 顺序切换预设
 HOTKEY_CLEAR = (MOD_CONTROL | MOD_ALT, 0x43, "Ctrl+Alt+C")  # 清空答案区
+HOTKEY_QA = (MOD_CONTROL | MOD_ALT, 0x57, "Ctrl+Alt+W")     # 问答模式：回答刚才的问题
 
 
 class WinHotkeyFilter(QAbstractNativeEventFilter):
@@ -428,6 +432,12 @@ class FuncThread(QThread):
             self.done.emit(None, str(exc))
 
 
+class QaBridge(QObject):
+    """把音频采集线程的回调安全地转入 GUI 线程（Signal 自动排队）。"""
+    utterance = Signal(bytes)   # 一句完整语音的 wav 字节
+    cap_error = Signal(str)     # 采集异常
+
+
 # ---------------------------------------------------------------- 设置对话框
 
 # 常用供应商预设：名称, provider, base_url
@@ -515,6 +525,44 @@ class SettingsDialog(QDialog):
         self.prompt = QPlainTextEdit(cfg.prompt or DEFAULT_PROMPT)
         self.prompt.setFixedHeight(110)
         form.addRow("提示词", self.prompt)
+
+        # ---- 问答助手（语音识别 + 口头问答）----
+        qa_title = QLabel("—— 问答助手（会议问答：听声音 → 生成口语化回答）——")
+        qa_title.setStyleSheet("color:#8fb8ff; font-weight:bold;")
+        form.addRow(qa_title)
+
+        self.asr_same = QCheckBox("语音识别使用与答题相同的服务商（Base URL + Key）")
+        self.asr_same.setChecked(bool(cfg.data.get("asr_use_same_key", False)))
+        form.addRow("语音识别", self.asr_same)
+
+        self.asr_base_url = QLineEdit(cfg.data.get("asr_base_url", ""))
+        self.asr_base_url.setPlaceholderText("如 https://api.siliconflow.cn/v1")
+        form.addRow("ASR Base URL", self.asr_base_url)
+
+        self.asr_api_key = QLineEdit(cfg.data.get("asr_api_key", ""))
+        self.asr_api_key.setEchoMode(QLineEdit.Password)
+        form.addRow("ASR API Key", self.asr_api_key)
+
+        self.asr_model = QLineEdit(cfg.data.get("asr_model", ""))
+        self.asr_model.setPlaceholderText(
+            "如 FunAudioLLM/SenseVoiceSmall 或 whisper-1")
+        form.addRow("ASR 模型", self.asr_model)
+
+        asr_hint = QLabel("语音识别推荐 SiliconFlow 的 SenseVoice（中文快且准，"
+                          "有免费额度），或 OpenAI whisper-1 等 Whisper 兼容服务。")
+        asr_hint.setWordWrap(True)
+        asr_hint.setStyleSheet("color:#9aa3b2; font-size:11px;")
+        form.addRow("", asr_hint)
+
+        self.qa_prompt = QPlainTextEdit(cfg.data.get("qa_prompt") or QA_PROMPT)
+        self.qa_prompt.setFixedHeight(90)
+        form.addRow("问答提示词", self.qa_prompt)
+
+        def _sync_asr_fields(checked):
+            for w in (self.asr_base_url, self.asr_api_key):
+                w.setEnabled(not checked)
+        self.asr_same.toggled.connect(_sync_asr_fields)
+        _sync_asr_fields(self.asr_same.isChecked())
 
         self.interval = QSpinBox()
         self.interval.setRange(1, 10)
@@ -640,6 +688,11 @@ class SettingsDialog(QDialog):
             "hotkey": self.hotkey.currentText(),
             "font_size": self.font_size.value(),
             "window_opacity": self.opacity.value() / 100,
+            "qa_prompt": self.qa_prompt.toPlainText().strip() or QA_PROMPT,
+            "asr_use_same_key": self.asr_same.isChecked(),
+            "asr_base_url": self.asr_base_url.text().strip(),
+            "asr_api_key": self.asr_api_key.text().strip(),
+            "asr_model": self.asr_model.text().strip(),
         })
         return d
 
@@ -720,6 +773,13 @@ class MainWindow(QWidget):
         self._inflight = False
         self._auto_count = 0
         self._auto_pre_fp = None
+        # 问答助手模式状态
+        self._cap_thread = None       # 音频采集线程
+        self._asr_thread = None       # 语音识别线程
+        self._qa_thread = None        # 回答生成线程
+        self._asr_busy = False        # ASR 请求进行中（期间新语音先攒着）
+        self._pending_wavs = []       # ASR 忙时积压的语音段
+        self._qa_pending_text = []    # 上次回答之后识别出的讲话文本
 
         # WindowDoesNotAcceptFocus + WA_ShowWithoutActivating：
         # 本窗口可正常点击/拖动，但永远不会从浏览器抢走键盘焦点，
@@ -780,6 +840,15 @@ class MainWindow(QWidget):
         self.status = QLabel("就绪", objectName="status")
         lay.addWidget(self.status)
 
+        # 问答助手：回答按钮（开启问答模式时才显示）
+        self.qa_answer_btn = QPushButton("💬 回答刚才的问题（Ctrl+Alt+W）",
+                                         objectName="primary")
+        self.qa_answer_btn.setToolTip(
+            "把最近识别到的讲话内容发给模型，生成口语化回答")
+        self.qa_answer_btn.clicked.connect(self._qa_answer)
+        self.qa_answer_btn.setVisible(False)
+        lay.addWidget(self.qa_answer_btn)
+
         # 操作按钮
         ops = QHBoxLayout()
         ops.setSpacing(8)
@@ -787,6 +856,10 @@ class MainWindow(QWidget):
         self.region_btn.clicked.connect(self._region_btn_clicked)
         self.ask_btn = QPushButton("🔍 识别本题", objectName="primary")
         self.ask_btn.clicked.connect(self.recognize_now)
+        self.qa_btn = QPushButton("🎙 问答", toolTip="问答助手模式：监听会议声音，"
+                                  "语音转文字后按 Ctrl+Alt+W 生成回答")
+        self.qa_btn.setCheckable(True)
+        self.qa_btn.toggled.connect(self._toggle_qa)
         # ---- 监控模式 / 自动模式暂时下线（按钮不显示，恢复时取消注释）----
         # self.monitor_btn = QPushButton("👁 监控: 关", toolTip="开启后画面变化自动识别")
         # self.monitor_btn.setCheckable(True)
@@ -799,6 +872,7 @@ class MainWindow(QWidget):
         self.auto_btn = None
         ops.addWidget(self.region_btn)
         ops.addWidget(self.ask_btn, stretch=1)
+        ops.addWidget(self.qa_btn)
         # ops.addWidget(self.monitor_btn)
         # ops.addWidget(self.auto_btn)
         # 右下角拖拽手柄：无边框窗口的大小调整
@@ -820,6 +894,10 @@ class MainWindow(QWidget):
         self._hotkey_filter = WinHotkeyFilter()
         QApplication.instance().installNativeEventFilter(self._hotkey_filter)
         self._register_hotkey()
+        # 问答助手：采集线程 -> GUI 线程的桥接
+        self._qa_bridge = QaBridge(self)
+        self._qa_bridge.utterance.connect(self._on_utterance)
+        self._qa_bridge.cap_error.connect(self._on_cap_error)
         self._refresh_hint()
         self._apply_capture_immunity()
         self._reload_profile_bar()
@@ -936,17 +1014,19 @@ class MainWindow(QWidget):
 
     # ---- 全局快捷键 ----
 
-    HOTKEY_ID_ASK, HOTKEY_ID_CYCLE, HOTKEY_ID_CLEAR = 1, 2, 3
+    HOTKEY_ID_ASK, HOTKEY_ID_CYCLE, HOTKEY_ID_CLEAR, HOTKEY_ID_QA = 1, 2, 3, 4
+    ALL_HOTKEY_IDS = (HOTKEY_ID_ASK, HOTKEY_ID_CYCLE, HOTKEY_ID_CLEAR,
+                      HOTKEY_ID_QA)
 
     def _register_hotkey(self):
         u = ctypes.windll.user32
-        for hid in (self.HOTKEY_ID_ASK, self.HOTKEY_ID_CYCLE,
-                    self.HOTKEY_ID_CLEAR):
+        for hid in self.ALL_HOTKEY_IDS:
             u.UnregisterHotKey(None, hid)
         self._hotkey_filter.handlers = {
             self.HOTKEY_ID_ASK: self._on_hotkey,
             self.HOTKEY_ID_CYCLE: self._cycle_profile,
             self.HOTKEY_ID_CLEAR: self._clear_answer,
+            self.HOTKEY_ID_QA: self._qa_answer,
         }
         name = self.cfg.data.get("hotkey", "Ctrl+Alt+Q")
         if name not in HOTKEYS:  # 兼容旧配置（如已删除的 Ctrl+Alt+S 选项）
@@ -957,7 +1037,8 @@ class MainWindow(QWidget):
             self.status.setText(
                 f"快捷键 {name} 注册失败（可能被其他程序占用），请在设置中更换")
         for hid, spec in ((self.HOTKEY_ID_CYCLE, HOTKEY_CYCLE),
-                          (self.HOTKEY_ID_CLEAR, HOTKEY_CLEAR)):
+                          (self.HOTKEY_ID_CLEAR, HOTKEY_CLEAR),
+                          (self.HOTKEY_ID_QA, HOTKEY_QA)):
             mod, vk, label = spec
             if not u.RegisterHotKey(None, hid, mod | MOD_NOREPEAT, vk):
                 self.status.setText(f"快捷键 {label} 注册失败（可能被其他程序占用）")
@@ -1006,9 +1087,111 @@ class MainWindow(QWidget):
             f"<div style='color:#8a93a6'><br>"
             f"{_html.escape(hk)}：识别本题<br>"
             f"Ctrl+Alt+S：顺序切换预设<br>"
-            f"Ctrl+Alt+C：清空答案"
+            f"Ctrl+Alt+C：清空答案<br>"
+            f"Ctrl+Alt+W：回答刚才的问题（需开启问答模式）"
             f"</div>")
         self.answer.setPlaceholderText("点击「识别本题」或按快捷键")
+
+    # ---- 问答助手模式 ----
+
+    def _toggle_qa(self, on: bool):
+        if on:
+            snap = self.cfg.data
+            has_key = bool(snap.get("asr_api_key")) or (
+                snap.get("asr_use_same_key") and snap.get("api_key"))
+            if not has_key:
+                self.status.setText("请先在 ⚙设置 的「问答助手」分组中配置语音识别服务")
+                self.qa_btn.setChecked(False)
+                return
+            self._qa_pending_text = []
+            self._pending_wavs = []
+            self.answer.clear()
+            self.answer.append(
+                "<span style='color:#8a93a6'>🎙 问答模式已开启，正在监听会议声音…<br>"
+                "识别到讲话会滚动显示在这里；听到问题后点下方按钮或按 "
+                "Ctrl+Alt+W 生成回答。</span>")
+            self.qa_btn.setText("🎙 问答中")
+            self.qa_answer_btn.setVisible(True)
+            self._cap_thread = LoopbackCapture(
+                self._qa_bridge.utterance.emit, self._qa_bridge.cap_error.emit)
+            self._cap_thread.start()
+            self.status.setText("问答模式：监听系统声音中…")
+        else:
+            self._stop_capture()
+            self.qa_btn.setText("🎙 问答")
+            self.qa_answer_btn.setVisible(False)
+            self.status.setText("问答模式已关闭")
+
+    def _stop_capture(self):
+        t = self._cap_thread
+        self._cap_thread = None
+        if t is not None:
+            t.stop()
+
+    def _on_cap_error(self, msg):
+        self.status.setText(f"音频采集失败：{msg[:60]}")
+        if self.qa_btn.isChecked():
+            self.qa_btn.setChecked(False)
+
+    def _on_utterance(self, wav: bytes):
+        """采集线程切出一句完整语音（经 QaBridge 转入 GUI 线程）。"""
+        if not self.qa_btn.isChecked():
+            return
+        if self._asr_busy:
+            self._pending_wavs.append(wav)  # ASR 忙时先攒着，空闲后合并识别
+            return
+        self._start_asr(wav)
+
+    def _start_asr(self, wav: bytes):
+        self._asr_busy = True
+        snap = dict(self.cfg.data)
+        self._asr_thread = FuncThread(lambda: transcribe_audio(snap, wav), self)
+        self._asr_thread.done.connect(self._on_transcript)
+        self._asr_thread.start()
+
+    def _on_transcript(self, text, err):
+        self._asr_busy = False
+        if err:
+            self.status.setText(f"语音识别失败：{err[:60]}")
+        elif text:
+            self._qa_pending_text.append(text)
+            self.answer.append(
+                f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
+        if self._pending_wavs:
+            merged = merge_wavs(self._pending_wavs)
+            self._pending_wavs.clear()
+            self._start_asr(merged)
+
+    def _qa_answer(self):
+        """Ctrl+Alt+W 或按钮：把识别到的讲话内容发给 LLM 生成口语化回答。"""
+        if not self.qa_btn.isChecked():
+            self.status.setText("请先开启「🎙 问答」模式")
+            return
+        if self._qa_thread is not None and self._qa_thread.isRunning():
+            self.status.setText("正在生成回答，请稍候…")
+            return
+        if not self._qa_pending_text:
+            self.status.setText("还没有识别到讲话内容")
+            return
+        question = "\n".join(self._qa_pending_text)
+        self._qa_pending_text = []
+        self.answer.append(f"<b>❓ {html.escape(question[:120])}</b>")
+        self.status.setText("正在生成回答…")
+        snap = dict(self.cfg.data)
+        self._qa_thread = FuncThread(lambda: ask_text(snap, question), self)
+        self._qa_thread.done.connect(self._on_qa_answered)
+        self._qa_thread.start()
+
+    def _on_qa_answered(self, text, err):
+        if err:
+            self.status.setText("回答生成失败")
+            self.answer.append(
+                f"<span style='color:#e07878'>回答失败：{html.escape(err)}</span>")
+        else:
+            self.status.setText("回答已生成 ✅")
+            body = html.escape(text).replace("\n", "<br>")
+            self.answer.append(
+                f"<span style='color:#f2f4f8'>💬 {body}</span><br>")
 
     # ---- 预设快捷切换 ----
 
@@ -1066,17 +1249,17 @@ class MainWindow(QWidget):
             self._refresh_hint()
 
     def _quit_app(self):
+        self._stop_capture()
         self.cfg.set("win_size", [self.width(), self.height()])
         self.cfg.save()
-        for hid in (self.HOTKEY_ID_ASK, self.HOTKEY_ID_CYCLE,
-                    self.HOTKEY_ID_CLEAR):
+        for hid in self.ALL_HOTKEY_IDS:
             ctypes.windll.user32.UnregisterHotKey(None, hid)
         self.tray.hide()
         QApplication.instance().quit()
 
     def closeEvent(self, e):
-        for hid in (self.HOTKEY_ID_ASK, self.HOTKEY_ID_CYCLE,
-                    self.HOTKEY_ID_CLEAR):
+        self._stop_capture()
+        for hid in self.ALL_HOTKEY_IDS:
             ctypes.windll.user32.UnregisterHotKey(None, hid)
         self.cfg.set("win_size", [self.width(), self.height()])
         self.cfg.save()

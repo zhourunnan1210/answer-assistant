@@ -4,7 +4,7 @@ import base64
 
 import requests
 
-from config import DEFAULT_PROMPT
+from config import DEFAULT_PROMPT, QA_PROMPT
 
 OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com"
@@ -157,6 +157,55 @@ def ask_vision(cfg: dict, png_bytes: bytes) -> str:
              "image_url": {"url": f"data:image/png;base64,{b64}"}},
         ]
         return _openai_chat(cfg, parts, thinking)
+
+
+def ask_text(cfg: dict, question: str) -> str:
+    """问答助手：纯文本对话。使用独立的 qa_prompt（口语化结构化回答）。"""
+    if not cfg.get("api_key"):
+        raise LlmError("未配置 API Key，请先在设置中填写。")
+    if not cfg.get("model"):
+        raise LlmError("未配置模型名称，请先在设置中填写。")
+    prompt = cfg.get("qa_prompt") or QA_PROMPT
+    content = f"{prompt}\n\n以下是会议中语音识别出的讲话内容：\n{question}"
+    parts = [{"type": "text", "text": content}]
+    thinking = bool(cfg.get("thinking", True))
+    if cfg.get("provider") == "anthropic":
+        return _anthropic_chat(cfg, parts, thinking)
+    return _openai_chat(cfg, parts, thinking)
+
+
+# ---------------------------------------------------------------- 语音识别（ASR）
+
+def _asr_config(cfg: dict):
+    """返回 (base_url, api_key, model)。asr_use_same_key 时复用答题模型的服务商。"""
+    if cfg.get("asr_use_same_key"):
+        base, key = cfg.get("base_url"), cfg.get("api_key")
+    else:
+        base, key = cfg.get("asr_base_url"), cfg.get("asr_api_key")
+    base = (base or "").rstrip("/")
+    model = cfg.get("asr_model") or "whisper-1"
+    if not base:
+        raise LlmError("未配置语音识别 Base URL，请在设置中填写。")
+    if not key:
+        raise LlmError("未配置语音识别 API Key，请在设置中填写。")
+    return base, key, model
+
+
+def transcribe_audio(cfg: dict, wav_bytes: bytes) -> str:
+    """OpenAI Whisper 兼容的语音识别：POST {base}/audio/transcriptions（multipart）。
+    支持 OpenAI whisper-1、SiliconFlow 的 SenseVoice 等。返回识别文本。"""
+    base, key, model = _asr_config(cfg)
+    resp = requests.post(
+        base + "/audio/transcriptions",
+        headers={"Authorization": f"Bearer {key}"},
+        files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+        data={"model": model},
+        timeout=60)
+    _check(resp)
+    try:
+        return (resp.json().get("text") or "").strip()
+    except Exception:
+        raise LlmError(f"无法解析识别结果: {resp.text[:200]}")
 
 
 def test_connection(cfg: dict) -> str:

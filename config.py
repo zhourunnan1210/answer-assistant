@@ -14,6 +14,19 @@ DEFAULT_PROMPT = (
     "4. 不要输出与答题无关的内容。"
 )
 
+# 问答助手专用提示词（与答题提示词独立）：口语化、结构化、可直接念出
+QA_PROMPT = (
+    "你是一位会议实时问答助手。下面是线上会议中语音识别出的讲话内容"
+    "（可能有错别字，请结合上下文理解）。\n"
+    "要求：\n"
+    "1. 先判断对方提出的核心问题是什么；\n"
+    "2. 给出适合直接口头念出来的回答：第一句话直接给结论，然后分点展开，"
+    "每点一两句话；\n"
+    "3. 语言口语化、自然，像人在现场回答，不要书面腔；\n"
+    "4. 总长度控制在 150 字以内，便于快速念完；\n"
+    "5. 如果内容里没有明确的问题，简要总结对方观点，并给出一句得体的回应。"
+)
+
 DEFAULTS = {
     "provider": "openai",                # openai | anthropic
     "base_url": "https://api.openai.com/v1",
@@ -29,6 +42,12 @@ DEFAULTS = {
     "font_size": 14,                     # 答案区字号（px）
     "win_size": None,                    # 记住窗口大小 [w, h]
     "profiles": {},                      # 我的预设：{名称: {provider, base_url, api_key, model, thinking}}
+    # ---- 问答助手（语音识别 + 文本问答）----
+    "qa_prompt": QA_PROMPT,              # 问答专用提示词
+    "asr_use_same_key": False,           # 语音识别是否复用答题服务商
+    "asr_base_url": "https://api.siliconflow.cn/v1",
+    "asr_api_key": "",
+    "asr_model": "FunAudioLLM/SenseVoiceSmall",
 }
 
 

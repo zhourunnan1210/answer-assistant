@@ -95,15 +95,29 @@ print("✓ 标题栏预设切换/匹配逻辑就位")
 # 4. 指纹/差异函数（用空 pixmap 不行，跳过像素级，仅验证函数存在）
 assert callable(app_main.diff_ratio)
 
-# 7. 全局快捷键：三个固定热键 + 识别热键选项里不再含 Ctrl+Alt+S
+# 7. 全局快捷键：四个热键 + 识别热键选项里不再含 Ctrl+Alt+S
 assert "Ctrl+Alt+S" not in app_main.HOTKEYS, "Ctrl+Alt+S 已用作切换预设，不应再是识别热键选项"
-assert len(win._hotkey_filter.handlers) == 3, win._hotkey_filter.handlers
+assert len(win._hotkey_filter.handlers) == 4, win._hotkey_filter.handlers
 assert win._hotkey_filter.handlers[app_main.MainWindow.HOTKEY_ID_ASK] == win._on_hotkey
 assert win._hotkey_filter.handlers[app_main.MainWindow.HOTKEY_ID_CYCLE] == win._cycle_profile
 assert win._hotkey_filter.handlers[app_main.MainWindow.HOTKEY_ID_CLEAR] == win._clear_answer
+assert win._hotkey_filter.handlers[app_main.MainWindow.HOTKEY_ID_QA] == win._qa_answer
 hint = win.answer.toPlainText()
 assert "Ctrl+Alt+S" in hint and "Ctrl+Alt+C" in hint, "提示区缺少快捷键说明"
+assert "Ctrl+Alt+W" in hint, "提示区缺少问答快捷键说明"
 print("✓ 快捷键分发/提示区说明就位（多行以灰色正文渲染，绕过 Qt placeholder 单行限制）")
+
+# 8. 问答助手：UI、配置、接口、音频模块
+assert hasattr(win, "qa_btn") and hasattr(win, "qa_answer_btn")
+assert callable(llm.transcribe_audio) and callable(llm.ask_text)
+assert "qa_prompt" in cfg2.data and "asr_model" in cfg2.data
+assert "asr_use_same_key" in cfg2.data and "asr_base_url" in cfg2.data
+import audio_capture
+w1 = audio_capture.pcm_to_wav(b"\x00\x01" * 100)
+assert w1[:4] == b"RIFF" and audio_capture.merge_wavs([w1, w1])[44:] == w1[44:] * 2
+snap2 = dlg._snapshot()
+assert "asr_api_key" in snap2 and "qa_prompt" in snap2, "设置快照缺少问答助手字段"
+print("✓ 问答助手链路就位（采集/识别/问答/配置）")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
