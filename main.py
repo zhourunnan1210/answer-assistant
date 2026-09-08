@@ -14,16 +14,16 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import (QColor, QGuiApplication, QIcon, QImage, QPainter,
                            QPen, QPixmap)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
-                               QDialogButtonBox, QFormLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QMenu,
-                               QMessageBox, QInputDialog, QPlainTextEdit,
+                               QDialogButtonBox, QFileDialog, QFormLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                               QMenu, QMessageBox, QInputDialog, QPlainTextEdit,
                                QPushButton, QRadioButton, QSizeGrip, QSlider,
                                QSpinBox, QStackedWidget, QSystemTrayIcon,
                                QTextEdit, QVBoxLayout, QWidget)
 
-from config import AppConfig, DEFAULT_PROMPT, QA_PROMPT
+from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT
 from audio_capture import LoopbackCapture, merge_wavs
-from llm import (AUTO_PROMPT, ask_text, ask_vision, fetch_models,
+from llm import (AUTO_PROMPT, ask_interview, ask_text, ask_vision, fetch_models,
                  test_asr, test_connection, transcribe_audio)
 
 def combo_arrow_path() -> str:
@@ -635,7 +635,42 @@ class SettingsDialog(QDialog):
         self.asr_same.toggled.connect(_sync_asr_fields)
         _sync_asr_fields()
 
-        # ================= 页 3：通用 =================
+        # ================= 页 3：面试助手 =================
+        page_iv = QWidget()
+        form_iv = QFormLayout(page_iv)
+        form_iv.setSpacing(10)
+        form_iv.setContentsMargins(4, 4, 4, 4)
+
+        iv_note = QLabel("面试辅助建立在问答模式之上：监听面试官讲话，"
+                         "生成回答时自动带上你的简历内容，让回答贴合你的真实经历。")
+        iv_note.setWordWrap(True)
+        iv_note.setStyleSheet("color:#8fb8ff; font-size:11px;")
+        form_iv.addRow("", iv_note)
+
+        resume_row = QHBoxLayout()
+        pick_btn = QPushButton("选择简历文件…")
+        pick_btn.setToolTip("支持 PDF / Word(.docx) / TXT / Markdown，"
+                            "自动提取文字内容（仅存文字，不上传文件本身）")
+        pick_btn.clicked.connect(self._pick_resume)
+        clear_btn = QPushButton("清空")
+        clear_btn.clicked.connect(self._clear_resume)
+        resume_row.addWidget(pick_btn)
+        resume_row.addWidget(clear_btn)
+        resume_row.addStretch()
+        form_iv.addRow("简历/文档", resume_row)
+
+        self.resume_label = QLabel()
+        self.resume_label.setWordWrap(True)
+        self.resume_label.setStyleSheet("font-size:11px;")
+        self._refresh_resume_label()
+        form_iv.addRow("", self.resume_label)
+
+        self.interview_prompt = QPlainTextEdit(
+            cfg.data.get("interview_prompt") or INTERVIEW_PROMPT)
+        self.interview_prompt.setFixedHeight(150)
+        form_iv.addRow("面试提示词", self.interview_prompt)
+
+        # ================= 页 4：通用 =================
         page_gen = QWidget()
         form_gen = QFormLayout(page_gen)
         form_gen.setSpacing(10)
@@ -674,10 +709,11 @@ class SettingsDialog(QDialog):
         self.pages = QStackedWidget()
         self.pages.addWidget(page_model)
         self.pages.addWidget(page_qa)
+        self.pages.addWidget(page_iv)
         self.pages.addWidget(page_gen)
 
         self.nav = QListWidget()
-        self.nav.addItems(["答题模型", "问答助手", "通用"])
+        self.nav.addItems(["答题模型", "问答助手", "面试助手", "通用"])
         self.nav.setFixedWidth(118)
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.nav.setCurrentRow(0)
@@ -703,6 +739,43 @@ class SettingsDialog(QDialog):
         lay.addWidget(self.test_result)
         lay.addWidget(btns)
         self.setStyleSheet(_dialog_style())
+
+    def _refresh_resume_label(self):
+        name = self.cfg.data.get("resume_name") or ""
+        text = self.cfg.data.get("resume_text") or ""
+        if name and text:
+            self.resume_label.setText(f"✅ 已加载：{name}（{len(text)} 字）")
+            self.resume_label.setStyleSheet("color:#7fd08a; font-size:11px;")
+        else:
+            self.resume_label.setText("未加载简历。支持 PDF / Word / TXT / Markdown。")
+            self.resume_label.setStyleSheet("color:#9aa3b2; font-size:11px;")
+
+    def _pick_resume(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择简历/文档", "",
+            "简历文档 (*.pdf *.docx *.txt *.md)")
+        if not path:
+            return
+        import docparse
+        try:
+            text = docparse.extract_text(path)
+        except docparse.DocParseError as e:
+            self.test_result.setText("❌ 简历解析失败：" + str(e))
+            return
+        import os
+        self.cfg.set("resume_name", os.path.basename(path))
+        self.cfg.set("resume_text", text)
+        self.cfg.save()  # 简历选择是导入动作，立即生效（不受「取消」影响）
+        self._refresh_resume_label()
+        self.test_result.setText(
+            f"✅ 简历已加载：{len(text)} 字，生成面试回答时将自动携带")
+
+    def _clear_resume(self):
+        self.cfg.set("resume_name", "")
+        self.cfg.set("resume_text", "")
+        self.cfg.save()
+        self._refresh_resume_label()
+        self.test_result.setText("已清空简历")
 
     def _test_asr(self):
         snap = self._snapshot()
@@ -810,6 +883,8 @@ class SettingsDialog(QDialog):
             "font_size": self.font_size.value(),
             "window_opacity": self.opacity.value() / 100,
             "qa_prompt": self.qa_prompt.toPlainText().strip() or QA_PROMPT,
+            "interview_prompt": (self.interview_prompt.toPlainText().strip()
+                                 or INTERVIEW_PROMPT),
             "asr_source": ("local" if self.asr_src_local.isChecked() else "cloud"),
             "asr_use_same_key": self.asr_same.isChecked(),
             "asr_base_url": self.asr_base_url.text().strip(),
@@ -982,6 +1057,11 @@ class MainWindow(QWidget):
                                   "语音转文字后按 Ctrl+Alt+W 生成回答")
         self.qa_btn.setCheckable(True)
         self.qa_btn.toggled.connect(self._toggle_qa)
+        self.interview_btn = QPushButton(
+            "💼 面试", toolTip="面试辅助模式：在问答监听的基础上，"
+            "生成回答时结合设置的「面试助手」分组中加载的简历内容")
+        self.interview_btn.setCheckable(True)
+        self.interview_btn.toggled.connect(self._toggle_interview)
         # ---- 监控模式 / 自动模式暂时下线（按钮不显示，恢复时取消注释）----
         # self.monitor_btn = QPushButton("👁 监控: 关", toolTip="开启后画面变化自动识别")
         # self.monitor_btn.setCheckable(True)
@@ -995,6 +1075,7 @@ class MainWindow(QWidget):
         ops.addWidget(self.region_btn)
         ops.addWidget(self.ask_btn, stretch=1)
         ops.addWidget(self.qa_btn)
+        ops.addWidget(self.interview_btn)
         # ops.addWidget(self.monitor_btn)
         # ops.addWidget(self.auto_btn)
         # 右下角拖拽手柄：无边框窗口的大小调整
@@ -1210,7 +1291,7 @@ class MainWindow(QWidget):
             f"{_html.escape(hk)}：识别本题<br>"
             f"Ctrl+Alt+S：顺序切换预设<br>"
             f"Ctrl+Alt+C：清空答案<br>"
-            f"Ctrl+Alt+W：回答刚才的问题（需开启问答模式）"
+            f"Ctrl+Alt+W：回答刚才的问题（需开启问答/面试模式）"
             f"</div>")
         self.answer.setPlaceholderText("点击「识别本题」或按快捷键")
 
@@ -1252,9 +1333,34 @@ class MainWindow(QWidget):
             self.status.setText("问答模式：监听系统声音中…")
         else:
             self._stop_capture()
+            if self.interview_btn.isChecked():
+                self.interview_btn.setChecked(False)  # 面试模式依赖问答监听
             self.qa_btn.setText("🎙 问答")
             self.qa_answer_btn.setVisible(False)
             self.status.setText("问答模式已关闭")
+
+    def _toggle_interview(self, on: bool):
+        """面试辅助：复用问答监听，回答时携带简历上下文。"""
+        if on:
+            if not (self.cfg.data.get("resume_text") or "").strip():
+                self.status.setText("请先在 ⚙设置 的「面试助手」分组中加载简历文件")
+                self.interview_btn.setChecked(False)
+                return
+            if not self.qa_btn.isChecked():
+                self.qa_btn.setChecked(True)   # 自动开启问答监听
+                if not self.qa_btn.isChecked():  # 问答开启失败（如 ASR 未就绪）
+                    self.interview_btn.setChecked(False)
+                    return
+            self.interview_btn.setText("💼 面试中")
+            name = self.cfg.data.get("resume_name") or "简历"
+            self.answer.append(
+                f"<span style='color:#8a93a6'>💼 面试辅助已开启，"
+                f"回答将结合「{html.escape(name)}」生成。</span>")
+            self.status.setText("面试辅助：回答将结合简历生成")
+        else:
+            self.interview_btn.setText("💼 面试")
+            if self.qa_btn.isChecked():
+                self.status.setText("面试辅助已关闭（问答监听仍在运行）")
 
     def _stop_capture(self):
         t = self._cap_thread
@@ -1310,9 +1416,14 @@ class MainWindow(QWidget):
         question = "\n".join(self._qa_pending_text)
         self._qa_pending_text = []
         self.answer.append(f"<b>❓ {html.escape(question[:120])}</b>")
-        self.status.setText("正在生成回答…")
         snap = dict(self.cfg.data)
-        self._qa_thread = FuncThread(lambda: ask_text(snap, question), self)
+        if self.interview_btn.isChecked():
+            self.status.setText("正在结合简历生成面试回答…")
+            fn = lambda: ask_interview(snap, question)  # noqa: E731
+        else:
+            self.status.setText("正在生成回答…")
+            fn = lambda: ask_text(snap, question)  # noqa: E731
+        self._qa_thread = FuncThread(fn, self)
         self._qa_thread.done.connect(self._on_qa_answered)
         self._qa_thread.start()
 
@@ -1330,7 +1441,7 @@ class MainWindow(QWidget):
     # ---- 预设快捷切换 ----
 
     PROFILE_KEYS = ("provider", "base_url", "api_key", "model", "thinking",
-                    "prompt", "qa_prompt")
+                    "prompt", "qa_prompt", "interview_prompt")
 
     def _current_profile_name(self):
         """当前配置与某个预设一致时返回预设名，否则返回 None。

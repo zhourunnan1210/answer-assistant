@@ -3,4 +3,6 @@ requests>=2.31
 soundcard>=0.4
 numpy>=1.26
 sherpa-onnx>=1.13
+pypdf>=4.0
+python-docx>=1.1
 pyinstaller>=6.0

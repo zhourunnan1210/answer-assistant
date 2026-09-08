@@ -4,7 +4,7 @@ import base64
 
 import requests
 
-from config import DEFAULT_PROMPT, QA_PROMPT
+from config import DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT
 
 OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com"
@@ -167,6 +167,26 @@ def ask_text(cfg: dict, question: str) -> str:
         raise LlmError("未配置模型名称，请先在设置中填写。")
     prompt = cfg.get("qa_prompt") or QA_PROMPT
     content = f"{prompt}\n\n以下是会议中语音识别出的讲话内容：\n{question}"
+    parts = [{"type": "text", "text": content}]
+    thinking = bool(cfg.get("thinking", True))
+    if cfg.get("provider") == "anthropic":
+        return _anthropic_chat(cfg, parts, thinking)
+    return _openai_chat(cfg, parts, thinking)
+
+
+def ask_interview(cfg: dict, question: str) -> str:
+    """面试辅助：简历上下文 + 面试官讲话 -> 口语化回答。
+    使用独立的 interview_prompt；简历文本来自 cfg['resume_text']。"""
+    resume = (cfg.get("resume_text") or "").strip()
+    if not resume:
+        raise LlmError("尚未加载简历，请在设置的「面试助手」分组中选择简历文件。")
+    if not cfg.get("api_key"):
+        raise LlmError("未配置 API Key，请先在设置中填写。")
+    if not cfg.get("model"):
+        raise LlmError("未配置模型名称，请先在设置中填写。")
+    prompt = cfg.get("interview_prompt") or INTERVIEW_PROMPT
+    content = (f"{prompt}\n\n【求职者简历】\n{resume}\n\n"
+               f"【面试中识别到的讲话】\n{question}")
     parts = [{"type": "text", "text": content}]
     thinking = bool(cfg.get("thinking", True))
     if cfg.get("provider") == "anthropic":

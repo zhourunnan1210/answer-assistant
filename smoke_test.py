@@ -146,6 +146,48 @@ assert _elapsed < 10, f"本地识别过慢：{_elapsed:.1f}s"
 msg = llm.test_asr(local_cfg)
 assert "本地模型就绪" in msg, msg
 print(f"✓ 本地语音识别链路就位（测试音识别耗时 {_elapsed:.2f}s）")
+
+# 10. 面试辅助：文档解析、配置字段、ask_interview、UI 开关
+import docparse
+import tempfile
+_tmp = tempfile.mkdtemp()
+_p_txt = os.path.join(_tmp, "简历.txt")
+with open(_p_txt, "w", encoding="utf-8") as _f:
+    _f.write("# 张三\n\n**3 年** Python 开发经验\n\n\n主导 推荐系统 项目")
+_t = docparse.extract_text(_p_txt)
+assert "张三" in _t and "3 年" in _t and "\n\n\n" not in _t, repr(_t)  # 空白压缩、换行归一
+_p_md = os.path.join(_tmp, "r.md")
+with open(_p_md, "w", encoding="utf-8") as _f:
+    _f.write("## 经历\n- **鹅厂** 后端开发\n")
+assert "**" not in docparse.extract_text(_p_md), "Markdown 标记应被去除"
+try:
+    docparse.extract_text(os.path.join(_tmp, "x.exe"))
+    raise SystemExit("不支持的格式应抛错")
+except docparse.DocParseError:
+    pass
+assert "interview_prompt" in cfg2.data and "resume_text" in cfg2.data
+assert "interview_prompt" in snap3 or "interview_prompt" in dlg._snapshot()
+assert "interview_prompt" in win.PROFILE_KEYS, "预设应包含面试提示词"
+assert callable(llm.ask_interview)
+try:
+    llm.ask_interview({"api_key": "k", "model": "m"}, "问题")
+    raise SystemExit("无简历时应抛错")
+except llm.LlmError as _e:
+    assert "简历" in str(_e)
+assert hasattr(win, "interview_btn") and hasattr(dlg, "interview_prompt")
+assert hasattr(dlg, "_pick_resume") and hasattr(dlg, "_clear_resume")
+# 未加载简历时面试开关应被拒绝
+win.cfg.data["resume_text"] = ""
+win.interview_btn.setChecked(True)
+assert not win.interview_btn.isChecked(), "无简历时面试模式不应开启"
+win.cfg.data["resume_text"] = "张三，3 年经验"
+win.interview_btn.setChecked(True)
+assert win.interview_btn.isChecked() and win.qa_btn.isChecked(), \
+    "面试模式应自动带动问答监听开启"
+win.interview_btn.setChecked(False)
+win.qa_btn.setChecked(False)
+win.cfg.data["resume_text"] = ""
+print("✓ 面试辅助链路就位（文档解析/简历配置/UI 联动）")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
