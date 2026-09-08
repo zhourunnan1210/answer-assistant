@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>切出检测模拟页</title>
+<style>
+  body { font-family: "Microsoft YaHei", sans-serif; margin: 24px; background:#f7f8fa; }
+  #state { font-size: 20px; font-weight: bold; padding: 12px; border-radius: 8px; }
+  .ok { background: #e6f7e6; color: #1a7f1a; }
+  .bad { background: #fdeaea; color: #c0392b; }
+  #log { margin-top: 16px; height: 240px; overflow-y: auto; background: #fff;
+         border: 1px solid #ddd; border-radius: 8px; padding: 10px; font-size: 13px;
+         font-family: Consolas, monospace; white-space: pre-wrap; }
+  h1 { font-size: 18px; }
+  h2 { font-size: 15px; margin-top: 28px; }
+  button { padding: 8px 16px; font-size: 14px; border-radius: 6px; cursor: pointer;
+           border: 1px solid #4a82f0; background: #4a82f0; color: #fff; }
+  #preview { margin-top: 12px; max-width: 100%; border: 2px solid #4a82f0;
+             border-radius: 8px; background: #000; }
+</style>
+</head>
+<body>
+<h1>切出检测模拟页（模拟网课平台的常见监听手段）</h1>
+<div id="state" class="ok">✅ 页面持有焦点（无切出）</div>
+<div id="log"></div>
+
+<h2>屏幕共享隐身测试</h2>
+<p style="font-size:13px;color:#555">
+点击按钮并选择「整个屏幕」开始共享后，下方视频就是你屏幕的实时画面。
+<b>如果答题助手窗口不出现在视频里</b>（本机屏幕上仍可见），说明隐身生效。</p>
+<button id="shareBtn">🖥️ 开始屏幕共享测试</button>
+<button id="stopBtn" style="background:#999;border-color:#999" disabled>停止共享</button><br>
+<video id="preview" autoplay muted width="640"></video>
+
+<script>
+window.__log = [];
+const logEl = document.getElementById('log');
+const stateEl = document.getElementById('state');
+
+function rec(type) {
+  const t = new Date().toLocaleTimeString('zh-CN', {hour12:false}) + '.' +
+            String(Date.now() % 1000).padStart(3, '0');
+  const line = `[${t}] ${type}`;
+  window.__log.push(line);
+  logEl.textContent += line + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+  if (type.includes('blur') || type.includes('hidden') || type.includes('失去焦点')) {
+    stateEl.textContent = '⚠️ 检测到切出：' + type;
+    stateEl.className = 'bad';
+  }
+}
+
+// 手段1：window blur / focus（最常见的切出检测）
+window.addEventListener('blur', () => rec('window blur —— 窗口失去焦点'));
+window.addEventListener('focus', () => rec('window focus —— 窗口重获焦点'));
+
+// 手段2：visibilitychange（页面可见性）
+document.addEventListener('visibilitychange',
+  () => rec('visibilitychange —— 页面变为 ' + document.visibilityState));
+
+// 手段3：document.hasFocus() 轮询（每 500ms）
+setInterval(() => {
+  if (!document.hasFocus()) rec('hasFocus() 轮询 —— 页面失去焦点');
+}, 500);
+
+// 手段4：鼠标离开页面区域（document mouseleave）
+document.addEventListener('mouseleave', () => rec('mouseleave —— 鼠标离开页面区域'));
+document.addEventListener('mouseenter', () => rec('mouseenter —— 鼠标回到页面区域'));
+
+// 屏幕共享隐身测试
+let stream = null;
+const shareBtn = document.getElementById('shareBtn');
+const stopBtn = document.getElementById('stopBtn');
+const preview = document.getElementById('preview');
+
+shareBtn.onclick = async () => {
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({video: true});
+    preview.srcObject = stream;
+    shareBtn.disabled = true;
+    stopBtn.disabled = false;
+    rec('屏幕共享已开始 —— 请查看下方视频里是否能看到答题助手窗口');
+    stream.getVideoTracks()[0].onended = stopShare;
+  } catch (e) {
+    rec('屏幕共享被取消或失败：' + e.message);
+  }
+};
+
+function stopShare() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  preview.srcObject = null;
+  shareBtn.disabled = false;
+  stopBtn.disabled = true;
+  rec('屏幕共享已停止');
+}
+stopBtn.onclick = stopShare;
+
+rec('页面加载完成，开始监听');
+</script>
+</body>
+</html>
