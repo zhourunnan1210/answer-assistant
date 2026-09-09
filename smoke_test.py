@@ -326,13 +326,13 @@ assert "新标题" in ed.preview.toPlainText()
 assert hasattr(dlg, "_open_fixed_editor")
 print("✓ Markdown 编辑器就位（编辑/预览/分屏/meta）")
 
-# 15. 面试自动作答（3 秒静默触发）
+# 15. 面试自动作答（2 秒静默触发）
 import config as _cfg_mod
 assert _cfg_mod.DEFAULTS.get("interview_auto_answer") is True
 assert hasattr(dlg, "iv_auto") and dlg.iv_auto.isChecked()
 snap15 = dlg._snapshot()
 assert "interview_auto_answer" in snap15
-assert win._auto_answer_timer.interval() == 3000
+assert win._auto_answer_timer.interval() == 2000
 assert win._auto_answer_timer.isSingleShot()
 # pending 为空时不动作（阻断信号，避免 toggled 触发完整开关流程）
 win._auto_answer_timer.stop()
@@ -360,9 +360,12 @@ assert not win._auto_answer_timer.isActive()
 win._auto_answer_timer.start()
 win._toggle_qa(False)
 assert not win._auto_answer_timer.isActive()
-print("✓ 面试自动作答就位（3 秒静默触发/开关/模式关闭停止计时）")
+print("✓ 面试自动作答就位（2 秒静默触发/开关/模式关闭停止计时）")
 
 # 16. 上下文去重 + 资料库目录稳定性
+win._ans_append("滚动测试内容")
+assert "滚动测试内容" in win.answer.toPlainText()
+win.answer.clear()
 win._convo = ["面试官：介绍一下自己", "我：我是……", "面试官：项目中遇到什么难题"]
 convo16 = win._convo_for_llm(["项目中遇到什么难题"])
 assert "项目中遇到什么难题" not in convo16  # 本轮问题从对话记录剔除，避免重复

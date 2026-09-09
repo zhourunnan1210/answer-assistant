@@ -832,10 +832,10 @@ class SettingsDialog(QDialog):
         self.interview_prompt.setFixedHeight(130)
         form_iv.addRow("面试提示词", self.interview_prompt)
 
-        self.iv_auto = QCheckBox("自动作答：面试官停止讲话 3 秒后自动生成回答（推荐开启）")
+        self.iv_auto = QCheckBox("自动作答：面试官停止讲话 2 秒后自动生成回答（推荐开启）")
         self.iv_auto.setToolTip(
             "开启后无需按 Ctrl+Alt+W：每次识别到面试官讲话都会重置计时，\n"
-            "静默满 3 秒即自动把问题发给模型；手动按钮/快捷键依然可用。")
+            "静默满 2 秒即自动把问题发给模型；手动按钮/快捷键依然可用。")
         self.iv_auto.setChecked(bool(cfg.data.get("interview_auto_answer", True)))
         form_iv.addRow("自动作答", self.iv_auto)
 
@@ -1442,10 +1442,10 @@ class MainWindow(QWidget):
         self._immersive_hidden = False
         self._immersive_geo = None   # 隐藏前的窗口几何，用于恢复
 
-        # 面试自动作答：面试官每次讲话后重置计时，静默满 3 秒自动触发
+        # 面试自动作答：面试官每次讲话后重置计时，静默满 2 秒视为问题结束并触发
         self._auto_answer_timer = QTimer(self)
         self._auto_answer_timer.setSingleShot(True)
-        self._auto_answer_timer.setInterval(3000)
+        self._auto_answer_timer.setInterval(2000)
         self._auto_answer_timer.timeout.connect(self._auto_answer_tick)
 
         self._apply_panel_style()
@@ -1694,7 +1694,7 @@ class MainWindow(QWidget):
             self._qa_pending_text = []
             self._pending_wavs = []
             self.answer.clear()
-            self.answer.append(
+            self._ans_append(
                 "<span style='color:#8a93a6'>🎙 问答模式已开启，正在监听会议声音…<br>"
                 "识别到讲话会滚动显示在这里；听到问题后点下方按钮或按 "
                 "Ctrl+Alt+W 生成回答。</span>")
@@ -1737,7 +1737,7 @@ class MainWindow(QWidget):
                     return
             self._convo = []  # 新一场面试，清空对话记录
             self.interview_btn.setText("💼 面试中")
-            self.answer.append(
+            self._ans_append(
                 "<span style='color:#8a93a6'>💼 面试辅助已开启：同时监听面试官（扬声器）"
                 "和你（麦克风），回答将结合资料库与对话上下文生成。</span>")
             # 开启麦克风采集（默认开启；失败仅提示，不影响面试模式）
@@ -1858,23 +1858,29 @@ class MainWindow(QWidget):
             lambda text, err: self._on_transcript(channel, text, err))
         self._asr_thread.start()
 
+    def _ans_append(self, html_text: str):
+        """追加到答案区并自动滚动到底部，保证最新内容始终可见。"""
+        self.answer.append(html_text)
+        sb = self.answer.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
     def _on_transcript(self, channel: str, text, err):
         self._asr_busy = False
         if err:
             self.status.setText(f"语音识别失败：{err[:60]}")
         elif text:
             if channel == "me":
-                self.answer.append(
+                self._ans_append(
                     f"<span style='color:#9fd0a0'>我：{html.escape(text)}</span>")
                 if self.interview_btn.isChecked():
                     self._convo.append(f"我：{text}")
             else:
                 self._qa_pending_text.append(text)
-                self.answer.append(
+                self._ans_append(
                     f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
                 if self.interview_btn.isChecked():
                     self._convo.append(f"面试官：{text}")
-                    self._auto_answer_kick()  # 重置 3 秒静默计时
+                    self._auto_answer_kick()  # 重置 2 秒静默计时
             self._trim_convo()
         if self._pending_wavs:
             # 取队首通道的同通道语音段合并识别，避免面试官/我的声音混在一段
@@ -1901,10 +1907,10 @@ class MainWindow(QWidget):
                     break
         return "\n".join(lines)
 
-    # ---- 面试自动作答（3 秒静默触发）----
+    # ---- 面试自动作答（2 秒静默触发）----
 
     def _auto_answer_kick(self):
-        """面试官每说一句就重置计时；静默满 3 秒由 _auto_answer_tick 触发。"""
+        """面试官每说一句就重置计时；静默满 2 秒由 _auto_answer_tick 触发。"""
         if (self.interview_btn.isChecked()
                 and self.cfg.data.get("interview_auto_answer", True)):
             self._auto_answer_timer.start()
@@ -1913,13 +1919,17 @@ class MainWindow(QWidget):
         if not self.interview_btn.isChecked() or not self._qa_pending_text:
             return
         if self._qa_thread is not None and self._qa_thread.isRunning():
-            self._auto_answer_timer.start()  # 上一个回答还在生成，3 秒后再试
+            self._auto_answer_timer.start()  # 上一个回答还在生成，2 秒后再试
             return
-        self.status.setText("检测到 3 秒静默，自动作答…")
+        self.status.setText("检测到 2 秒静默，自动作答…")
         self._qa_answer()
 
     def _qa_answer(self):
-        """Ctrl+Alt+W 或按钮：把识别到的讲话内容发给 LLM 生成口语化回答。"""
+        """Ctrl+Alt+W / 按钮 / 自动触发：把识别到的面试官讲话发给 LLM 生成回答。
+
+        提交规则：只提交扬声器（面试官）通道的内容；麦克风（我）的转写只进
+        对话记录，不进入问题，也不阻塞提交——面试官问完后我可以立刻口头回应，
+        与助手生成回答互不冲突。每次作答先清空答案区，只保留当前问题 + 回答。"""
         if not self.qa_btn.isChecked():
             self.status.setText("请先开启「🎙 问答」模式")
             return
@@ -1932,7 +1942,8 @@ class MainWindow(QWidget):
         pending = list(self._qa_pending_text)
         question = "\n".join(pending)
         self._qa_pending_text = []
-        self.answer.append(f"<b>❓ {html.escape(question[:120])}</b>")
+        self.answer.clear()  # 只显示当前问题 + 回答
+        self._ans_append(f"<b>❓ {html.escape(question[:120])}</b>")
         snap = dict(self.cfg.data)
         if self.interview_btn.isChecked():
             self.status.setText("正在结合资料库与对话上下文生成回答…")
@@ -1948,14 +1959,14 @@ class MainWindow(QWidget):
     def _on_qa_answered(self, text, err):
         if err:
             self.status.setText("回答生成失败")
-            self.answer.append(
+            self._ans_append(
                 f"<span style='color:#e07878'>回答失败：{html.escape(err)}</span>")
         else:
             self.status.setText("回答已生成 ✅")
             body = html.escape(text).replace("\n", "<br>")
-            self.answer.append(
+            self._ans_append(
                 f"<span style='color:#f2f4f8'>💬 {body}</span><br>")
-        # 生成期间面试官又讲了新内容 → 重新计时，静默 3 秒后自动跟进
+        # 生成期间面试官又讲了新内容 → 重新计时，静默 2 秒后自动跟进
         if self._qa_pending_text:
             self._auto_answer_kick()
 
