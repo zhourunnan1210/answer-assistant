@@ -449,6 +449,21 @@ def texts_similar(a: str, b: str, threshold: float = 0.85) -> bool:
     return difflib.SequenceMatcher(None, na, nb).ratio() >= threshold
 
 
+def _join_utterances(parts: list) -> str:
+    """把 mic 连续碎段拼成一条自然文本：中文直接相连，
+    相邻两段都是 ASCII 字母/数字结尾开头时补空格（防英文粘词）。"""
+    out = ""
+    for p in parts:
+        p = (p or "").strip()
+        if not p:
+            continue
+        if (out and out[-1].isascii() and out[-1].isalnum()
+                and p[0].isascii() and p[0].isalnum()):
+            out += " "
+        out += p
+    return out
+
+
 # ---------------------------------------------------------------- 区域框选
 
 class RegionSelector(QWidget):
@@ -1008,6 +1023,14 @@ class SettingsDialog(QDialog):
         self.immersive.setChecked(bool(cfg.data.get("immersive_mode", False)))
         form_gen.addRow("沉浸式", self.immersive)
 
+        self.qa_thinking = QCheckBox("问答/面试启用思考模式（回答更慢但更深入）")
+        self.qa_thinking.setToolTip(
+            "问答/面试是实时场景，默认关闭思考模式以压低延迟；\n"
+            "开启后回答质量可能更好，但会多出数秒至十几秒的思考时间。\n"
+            "（答题、复盘、资料初始化仍使用「答题模型」页的思考开关）")
+        self.qa_thinking.setChecked(bool(cfg.data.get("qa_thinking", False)))
+        form_gen.addRow("实时思考", self.qa_thinking)
+
         self.stealth_compat = QCheckBox("Windows 10 2004 兼容隐身（需重启生效）")
         self.stealth_compat.setToolTip(
             "Win10 2004 等旧系统上，半透明分层窗口会导致隐身失效\n"
@@ -1419,6 +1442,7 @@ class SettingsDialog(QDialog):
             "ui_bg_opacity": self.ui_bg.value() / 100,
             "answer_bg_opacity": self.answer_bg.value() / 100,
             "immersive_mode": self.immersive.isChecked(),
+            "qa_thinking": self.qa_thinking.isChecked(),
             "stealth_compat": self.stealth_compat.isChecked(),
             "session_autosave": self.session_autosave.isChecked(),
             "inject_review": self.iv_inject_review.isChecked(),
@@ -1528,6 +1552,7 @@ class MainWindow(QWidget):
         self._qa_pending_text = []    # 上次回答之后识别出的面试官讲话
         self._convo = []              # 面试对话记录 ["面试官：…", "我：…"]
         self._me_speaking_shown = False  # 答案区是否已显示「我：( 正在说话 )」指示
+        self._me_buffer = []          # mic 碎段缓冲：2 秒无新段合并为一条入记录
         self._session_log = []        # 本场面试完整记录（面试官/我/助手建议）
         self._session_filtered = []   # 被判定为回声/噪音而过滤的内容（审计用）
         self._recent_iv = []          # [(时刻, 文本)] 面试官近期讲话，回声判定用
@@ -1664,6 +1689,12 @@ class MainWindow(QWidget):
         self._auto_answer_timer.setSingleShot(True)
         self._auto_answer_timer.setInterval(3000)
         self._auto_answer_timer.timeout.connect(self._auto_answer_tick)
+
+        # mic 碎段合并：一段回答常被切成多条转写，2 秒无新段则合并入库
+        self._me_merge_timer = QTimer(self)
+        self._me_merge_timer.setSingleShot(True)
+        self._me_merge_timer.setInterval(2000)
+        self._me_merge_timer.timeout.connect(self._flush_me_buffer)
 
         self._apply_panel_style()
 
@@ -1921,6 +1952,7 @@ class MainWindow(QWidget):
                     return
             self._qa_pending_text = []
             self._pending_wavs = []
+            self._me_buffer = []
             self._me_speaking_shown = False
             self.answer.clear()
             self._ans_append(
@@ -2114,14 +2146,17 @@ class MainWindow(QWidget):
                         # 扬声器外放导致的回声：不入上下文，留审计记录
                         self._session_filtered.append(f"我(回声已滤)：{text}")
                     elif not is_noise_utterance(text):
-                        self._convo.append(f"我：{text}")
-                        self._session_log.append(f"我：{text}")
+                        # 先进碎段缓冲区，2 秒无新段（或面试官插话/提交/保存）时
+                        # 合并为一条「我：…」写入记录，避免刷屏式碎行
+                        self._me_buffer.append(text)
+                        self._me_merge_timer.start()
             else:
                 self._me_speaking_shown = False  # 面试官插话，重置指示
                 if is_noise_utterance(text):
                     # 杂音/语气碎片：不显示、不进 pending、不触发自动作答
                     pass
                 else:
+                    self._flush_me_buffer()  # 面试官插话：我的碎段立即合并入库，保证时序
                     self._qa_pending_text.append(text)
                     self._ans_append(
                         f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
@@ -2148,6 +2183,20 @@ class MainWindow(QWidget):
         self._recent_iv = recent
         return any(texts_similar(text, s) for _, s in recent)
 
+    def _flush_me_buffer(self):
+        """把 mic 碎段缓冲合并为一条「我：…」写入对话记录与场次记录。
+        触发时机：2 秒无新 mic 段（定时器）、面试官插话、提交回答前、保存场次第。"""
+        self._me_merge_timer.stop()
+        if not self._me_buffer:
+            return
+        merged = _join_utterances(self._me_buffer)
+        self._me_buffer = []
+        if not merged:
+            return
+        self._convo.append(f"我：{merged}")
+        self._session_log.append(f"我：{merged}")
+        self._trim_convo()
+
     def _trim_convo(self):
         import profile_store as ps
         while self._convo and sum(len(x) for x in self._convo) > ps.CONVO_MAX_CHARS:
@@ -2169,6 +2218,7 @@ class MainWindow(QWidget):
 
     def _save_session(self):
         """面试结束/退出时：保存本场记录到资料库 sessions/，并后台生成复盘。"""
+        self._flush_me_buffer()  # mic 缓冲先入库，再保存
         log, self._session_log = self._session_log, []
         filtered, self._session_filtered = self._session_filtered, []
         if not log or not self.cfg.data.get("session_autosave", True):
@@ -2242,6 +2292,7 @@ class MainWindow(QWidget):
         pending = list(self._qa_pending_text)
         question = "\n".join(pending)
         self._qa_pending_text = []
+        self._flush_me_buffer()  # 提交前确保「我」刚说的话已进入对话上下文
         self._unclear_retried = False  # 新一轮问题允许一次「听不清」自动重试
         self.answer.clear()  # 只显示当前问题 + 回答
         self._me_speaking_shown = False
@@ -2379,6 +2430,13 @@ class MainWindow(QWidget):
         QApplication.instance().quit()
 
     def closeEvent(self, e):
+        # 先走正常模式关闭链：停采集 → 保存本场面试记录 → 后台生成复盘，
+        # 避免 Alt+F4 / 任务栏右键关闭 / 系统关机时丢掉面试记录；
+        # 同时复位按钮状态，防止托盘恢复后模式"假开启"（采集已停按钮仍亮）
+        if self.qa_btn.isChecked():
+            self.qa_btn.setChecked(False)   # _toggle_qa 会联动关闭面试并存场次
+        elif self.interview_btn.isChecked():
+            self.interview_btn.setChecked(False)
         self._stop_capture()
         for hid in self.ALL_HOTKEY_IDS:
             ctypes.windll.user32.UnregisterHotKey(None, hid)

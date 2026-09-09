@@ -177,6 +177,10 @@ def save_session(lines: list) -> str:
     os.makedirs(sessions_dir(), exist_ok=True)
     name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".md"
     path = os.path.join(sessions_dir(), name)
+    i = 1
+    while os.path.exists(path):  # 同一秒内多次保存时加序号，防覆盖
+        path = os.path.join(sessions_dir(), f"{name[:-3]}_{i}.md")
+        i += 1
     body = "\n\n".join(l.strip() for l in lines if l and l.strip())
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"# 面试记录 {datetime.datetime.now():%Y-%m-%d %H:%M}\n\n{body}\n")

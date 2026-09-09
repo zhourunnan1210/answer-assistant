@@ -162,7 +162,8 @@ def ask_vision(cfg: dict, png_bytes: bytes) -> str:
 
 
 def ask_text(cfg: dict, question: str) -> str:
-    """问答助手：纯文本对话。使用独立的 qa_prompt（口语化结构化回答）。"""
+    """问答助手：纯文本对话。使用独立的 qa_prompt（口语化结构化回答）。
+    实时场景用独立的 qa_thinking 开关（默认关，低延迟优先）。"""
     if not cfg.get("api_key"):
         raise LlmError("未配置 API Key，请先在设置中填写。")
     if not cfg.get("model"):
@@ -170,28 +171,32 @@ def ask_text(cfg: dict, question: str) -> str:
     prompt = cfg.get("qa_prompt") or QA_PROMPT
     content = f"{prompt}\n\n以下是会议中语音识别出的讲话内容：\n{question}"
     parts = [{"type": "text", "text": content}]
-    thinking = bool(cfg.get("thinking", True))
+    thinking = bool(cfg.get("qa_thinking", False))
     if cfg.get("provider") == "anthropic":
         return _anthropic_chat(cfg, parts, thinking)
     return _openai_chat(cfg, parts, thinking)
 
 
-def _plain_chat(cfg: dict, content: str) -> str:
-    """纯文本单轮对话（不校验配置，调用方负责）。"""
+def _plain_chat(cfg: dict, content: str, thinking: bool = None) -> str:
+    """纯文本单轮对话（不校验配置，调用方负责）。
+    thinking 为 None 时用主开关 cfg["thinking"]（复盘/资料初始化等离线任务）。"""
     parts = [{"type": "text", "text": content}]
-    thinking = bool(cfg.get("thinking", True))
+    if thinking is None:
+        thinking = bool(cfg.get("thinking", True))
     if cfg.get("provider") == "anthropic":
         return _anthropic_chat(cfg, parts, thinking)
     return _openai_chat(cfg, parts, thinking)
 
 
 def ask_interview(cfg: dict, question: str, convo: str = "") -> str:
-    """面试辅助：资料库上下文 + 对话记录 + 面试官讲话 -> 口语化回答。"""
+    """面试辅助：资料库上下文 + 对话记录 + 面试官讲话 -> 口语化回答。
+    实时场景用独立的 qa_thinking 开关（默认关，低延迟优先）。"""
     if not cfg.get("api_key"):
         raise LlmError("未配置 API Key，请先在设置中填写。")
     if not cfg.get("model"):
         raise LlmError("未配置模型名称，请先在设置中填写。")
-    return _plain_chat(cfg, build_interview_content(cfg, question, convo))
+    return _plain_chat(cfg, build_interview_content(cfg, question, convo),
+                       thinking=bool(cfg.get("qa_thinking", False)))
 
 
 def build_interview_content(cfg: dict, question: str, convo: str = "") -> str:

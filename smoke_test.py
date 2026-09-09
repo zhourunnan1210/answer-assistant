@@ -493,6 +493,84 @@ win._convo = ["面试官：你为什么投递这个岗位？", "我：因为我�
               "面试官：The"]
 assert win._last_complete_question() == "你为什么投递这个岗位？"
 print("✓ 防噪/复盘归档/一键优化资料库就位")
+
+# ================= v2.0：mic 碎段合并 / 提示词迁移 / 独立思考开关 / 退出落盘 =================
+# 碎段拼接：中文直接相连，英文补空格防粘词
+assert app_main._join_utterances(["我是想说", "这个方案其实"]) == "我是想说这个方案其实"
+assert app_main._join_utterances(["I used", "to walk"]) == "I used to walk"
+assert app_main._join_utterances(["", None, "好"]) == "好"
+
+# mic 合并缓冲：多段先入缓冲，flush 后合并为一条；面试官插话立即 flush 且时序正确
+win.interview_btn.blockSignals(True); win.interview_btn.setChecked(True)
+win.qa_btn.blockSignals(True); win.qa_btn.setChecked(True)
+win._convo, win._session_log, win._recent_iv = [], [], []
+win._me_buffer = []
+win._on_transcript("me", "我是想说", None)
+win._on_transcript("me", "这个方案其实", None)
+assert win._session_log == [] and win._me_buffer == ["我是想说", "这个方案其实"]
+win._flush_me_buffer()
+assert win._session_log == ["我：我是想说这个方案其实"] and win._me_buffer == []
+win._on_transcript("me", "还有一点补充", None)
+win._on_transcript("interviewer", "好的，那我们聊聊下一个话题。", None)
+assert win._session_log[-2] == "我：还有一点补充"
+assert win._session_log[-1] == "面试官：好的，那我们聊聊下一个话题。"
+win._auto_answer_timer.stop()  # 面试官文本触发的自动作答计时，测试中不触发
+win._qa_pending_text = []
+win.qa_btn.setChecked(False); win.qa_btn.blockSignals(False)
+win.interview_btn.setChecked(False); win.interview_btn.blockSignals(False)
+
+# 提示词迁移：v1.x 旧默认 -> 新默认（含朗读/语言条款），自定义不动
+assert config.DEFAULTS["qa_thinking"] is False
+_mig = config.AppConfig({"interview_prompt": config._INTERVIEW_PROMPT_V1})
+assert _mig.data["interview_prompt"] == config.INTERVIEW_PROMPT
+assert "朗读" in config.INTERVIEW_PROMPT and "什么语言" in config.INTERVIEW_PROMPT
+_mig2 = config.AppConfig({"interview_prompt": "我自己的提示词"})
+assert _mig2.data["interview_prompt"] == "我自己的提示词"
+
+# thinking 透传：问答/面试走 qa_thinking（默认关），复盘等离线任务走主 thinking
+_orig_chat = llm._openai_chat
+_think_calls = []
+def _think_spy(cfg, parts, thinking):
+    _think_calls.append(thinking)
+    return "OK"
+llm._openai_chat = _think_spy
+try:
+    _tc = {"api_key": "k", "model": "m", "provider": "openai",
+           "thinking": True, "qa_thinking": False}
+    llm.ask_text(_tc, "问题")
+    assert _think_calls[-1] is False      # 问答：qa_thinking 关
+    llm.ask_interview(_tc, "问题", convo="")
+    assert _think_calls[-1] is False      # 面试：qa_thinking 关
+    llm.generate_review(_tc, "记录")
+    assert _think_calls[-1] is True       # 复盘：主 thinking 开
+    _tc["qa_thinking"] = True
+    llm.ask_text(_tc, "问题")
+    assert _think_calls[-1] is True       # 开关生效
+finally:
+    llm._openai_chat = _orig_chat
+
+# 退出落盘链路：closeEvent 走模式关闭链（存场次+复位按钮），_save_session 幂等
+import inspect as _insp
+_ce_src = _insp.getsource(app_main.MainWindow.closeEvent)
+assert "setChecked(False)" in _ce_src and "_stop_capture" in _ce_src
+_qa_src = _insp.getsource(app_main.MainWindow._toggle_qa)
+assert "_save_session" not in _qa_src  # 保存由联动的 _toggle_interview 完成
+assert "_save_session" in _insp.getsource(app_main.MainWindow._toggle_interview)
+assert "_flush_me_buffer" in _insp.getsource(app_main.MainWindow._save_session)
+_sessions_dir = os.path.join(os.environ["PROFILE_DIR"], "sessions")
+_sbefore = len(_glob.glob(os.path.join(_sessions_dir, "*.md")))
+win._session_log = ["面试官：测试问题", "我：测试回答"]
+_key_bak = win.cfg.data.get("api_key")
+win.cfg.data["api_key"] = ""  # 无 key：保存文件但跳过复盘网络调用
+win._save_session()
+win._save_session()  # 第二次为空，不产生新文件
+win.cfg.data["api_key"] = _key_bak
+assert len(_glob.glob(os.path.join(_sessions_dir, "*.md"))) == _sbefore + 1, \
+    (f"before={_sbefore} after={len(_glob.glob(os.path.join(_sessions_dir, '*.md')))} "
+     f"autosave={win.cfg.data.get('session_autosave')} dir={_sessions_dir}")
+# 设置界面：qa_thinking 开关存在且入快照
+assert hasattr(dlg, "qa_thinking") and "qa_thinking" in dlg._snapshot()
+print("✓ v2.0：mic 合并/提示词迁移/独立思考开关/退出落盘就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
