@@ -222,6 +222,25 @@ assert not win._immersive_engaged() and not win._immersive_timer.isActive()
 assert not win._immersive_hidden, "关闭问答后应恢复完整 UI"
 win.cfg.data["immersive_mode"] = False
 print("✓ 沉浸式模式就位（联动/收缩/恢复几何正确）")
+
+# 12. 区域背景透明度：配置字段、快照、样式参数化
+assert "ui_bg_opacity" in cfg2.data and "answer_bg_opacity" in cfg2.data
+snap5 = dlg._snapshot()
+assert "ui_bg_opacity" in snap5 and "answer_bg_opacity" in snap5
+assert hasattr(dlg, "ui_bg") and hasattr(dlg, "answer_bg"), "通用页缺少区域透明度滑块"
+assert "ui_bg_opacity" not in win.PROFILE_KEYS
+assert "answer_bg_opacity" not in win.PROFILE_KEYS, "区域透明度不应随预设变化"
+win.cfg.data["ui_bg_opacity"] = 0.5
+win._apply_panel_style()
+assert "rgba(24, 27, 34, 128)" in win.styleSheet(), "面板背景透明度未生效"
+win.cfg.data["answer_bg_opacity"] = 0.4
+win._apply_answer_style()
+assert "rgba(255, 255, 255, 102)" in win.answer.styleSheet(), "答案区背景透明度未生效"
+win.cfg.data["ui_bg_opacity"] = 0.80
+win.cfg.data["answer_bg_opacity"] = 0.05
+win._apply_panel_style()
+win._apply_answer_style()
+print("✓ 区域背景透明度就位（UI 区/答案区独立，且不入预设）")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

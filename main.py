@@ -138,8 +138,12 @@ def _with_arrow(style: str) -> str:
         % combo_arrow_path())
 
 
-def _panel_style() -> str:
-    return _with_arrow(PANEL_STYLE_HEAD)
+def _panel_style(ui_alpha: int = 205) -> str:
+    """主面板样式。ui_alpha 为 UI 底板不透明度（0~255），
+    对应设置中的「UI 区域背景不透明度」；默认 205（80%）。"""
+    head = PANEL_STYLE_HEAD.replace(
+        "rgba(24, 27, 34, 205)", f"rgba(24, 27, 34, {ui_alpha})")
+    return _with_arrow(head)
 
 
 # ------------------------------------------------------------------ 设置对话框
@@ -705,6 +709,28 @@ class SettingsDialog(QDialog):
         op_row.addWidget(self.opacity_label)
         form_gen.addRow("窗口不透明度", op_row)
 
+        # 区域背景不透明度（只影响背景，文字保持清晰；用户级，不随预设变化）
+        def _pct_slider(val):
+            row = QHBoxLayout()
+            s = QSlider(Qt.Horizontal)
+            s.setRange(0, 100)
+            s.setValue(round(max(0.0, min(1.0, val)) * 100))
+            lab = QLabel(f"{s.value()}%")
+            s.valueChanged.connect(lambda v: lab.setText(f"{v}%"))
+            row.addWidget(s)
+            row.addWidget(lab)
+            return row, s
+
+        ui_row, self.ui_bg = _pct_slider(
+            float(cfg.data.get("ui_bg_opacity", 0.80)))
+        self.ui_bg.setToolTip("标题栏/按钮区底板的背景不透明度，越低越透")
+        form_gen.addRow("UI 区域背景", ui_row)
+
+        ans_row, self.answer_bg = _pct_slider(
+            float(cfg.data.get("answer_bg_opacity", 0.05)))
+        self.answer_bg.setToolTip("答案显示区的背景不透明度，越低越透")
+        form_gen.addRow("答案区背景", ans_row)
+
         self.immersive = QCheckBox("沉浸式模式（问答/面试时）")
         self.immersive.setToolTip(
             "开启后，在问答/面试模式下：\n"
@@ -891,6 +917,8 @@ class SettingsDialog(QDialog):
             "hotkey": self.hotkey.currentText(),
             "font_size": self.font_size.value(),
             "window_opacity": self.opacity.value() / 100,
+            "ui_bg_opacity": self.ui_bg.value() / 100,
+            "answer_bg_opacity": self.answer_bg.value() / 100,
             "immersive_mode": self.immersive.isChecked(),
             "qa_prompt": self.qa_prompt.toPlainText().strip() or QA_PROMPT,
             "interview_prompt": (self.interview_prompt.toPlainText().strip()
@@ -1043,7 +1071,7 @@ class MainWindow(QWidget):
         # 答案区
         self.answer = QTextEdit(readOnly=True,
                                 placeholderText="点击「识别本题」，答案将显示在这里。")
-        self._apply_font_size()
+        self._apply_answer_style()
         lay.addWidget(self.answer, stretch=1)
 
         # 状态
@@ -1107,7 +1135,7 @@ class MainWindow(QWidget):
         self._immersive_hidden = False
         self._immersive_geo = None   # 隐藏前的窗口几何，用于恢复
 
-        self.setStyleSheet(_panel_style())
+        self._apply_panel_style()
 
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._monitor_tick)
@@ -1234,9 +1262,20 @@ class MainWindow(QWidget):
 
     # ---- 全局快捷键 ----
 
-    def _apply_font_size(self):
+    def _apply_answer_style(self):
+        """答案区样式：字号 + 背景不透明度（白色叠加层，只影响背景不伤文字）。"""
         n = int(self.cfg.data.get("font_size", 14))
-        self.answer.setStyleSheet(f"font-size: {n}px;")
+        a = round(max(0.0, min(1.0,
+                float(self.cfg.data.get("answer_bg_opacity", 0.05)))) * 255)
+        self.answer.setStyleSheet(
+            f"font-size: {n}px; background-color: rgba(255, 255, 255, {a});"
+            " color: #f2f4f8; border: none; border-radius: 8px; padding: 6px;")
+
+    def _apply_panel_style(self):
+        """UI 区域底板样式：按设置的不透明度重刷整面板背景。"""
+        a = round(max(0.0, min(1.0,
+                float(self.cfg.data.get("ui_bg_opacity", 0.80)))) * 255)
+        self.setStyleSheet(_panel_style(a))
 
     # ---- 全局快捷键 ----
 
@@ -1610,7 +1649,8 @@ class MainWindow(QWidget):
             self.setWindowOpacity(self.cfg.window_opacity)
             self._register_hotkey()
             self._refresh_hint()
-            self._apply_font_size()
+            self._apply_answer_style()
+            self._apply_panel_style()  # UI/答案区背景不透明度可能变化
             self._apply_capture_immunity()
             self._reload_profile_bar()  # 预设可能被增删，刷新标题栏下拉
             self._sync_immersive_timer()  # 沉浸式开关可能变化

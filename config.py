@@ -57,6 +57,8 @@ DEFAULTS = {
     "font_size": 14,                     # 答案区字号（px）
     "win_size": None,                    # 记住窗口大小 [w, h]
     "immersive_mode": False,             # 沉浸式：问答/面试时鼠标离开窗口自动只留答案区
+    "ui_bg_opacity": 0.80,               # UI 区域（标题栏/按钮区底板）背景不透明度 0~1
+    "answer_bg_opacity": 0.05,           # 答案区背景不透明度 0~1（白色叠加层）
     "profiles": {},                      # 我的预设：{名称: {provider, base_url, api_key, model, thinking}}
     # ---- 问答助手（语音识别 + 文本问答）----
     "qa_prompt": QA_PROMPT,              # 问答专用提示词
