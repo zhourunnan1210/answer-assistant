@@ -248,9 +248,11 @@ def apply_review(cfg: dict) -> dict:
         raise LlmError("还没有面试复盘。先完成一场面试（或手动编辑复盘）。")
     fixed = ps.load_fixed() or (cfg.get("resume_text") or "")
     docs = ps.load_flex()
+    existing_imp = (cfg.get("prompt_improvements") or "").strip()
     content = (REVIEW_APPLY_PROMPT + "\n\n【面试复盘】\n" + review[:6000]
                + "\n\n【固定文稿】\n" + fixed[:4000]
-               + "\n\n【灵活文稿索引】\n" + (ps.flex_index(docs) or "（空）"))
+               + "\n\n【灵活文稿索引】\n" + (ps.flex_index(docs) or "（空）")
+               + "\n\n【现有改进要点】\n" + (existing_imp or "（无）"))
     out = _plain_chat(cfg, content)
     result = _parse_docs_json_object(out)
     for key in ("flex_updates", "flex_additions"):

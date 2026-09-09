@@ -1166,7 +1166,7 @@ class SettingsDialog(QDialog):
         summary.setPlainText("\n\n".join(lines))
         summary.setMinimumSize(440, 260)
         lay.addWidget(summary)
-        prompt_chk = QCheckBox("同时采纳提示词改进建议（用户级，不随预设切换）",
+        prompt_chk = QCheckBox("同时采纳提示词改进建议（与现有要点合并，用户级不随预设）",
                                dlg)
         prompt_chk.setChecked(bool(sug))
         prompt_chk.setEnabled(bool(sug))
