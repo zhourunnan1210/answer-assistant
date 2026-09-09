@@ -1322,6 +1322,7 @@ class MainWindow(QWidget):
         self._pending_wavs = []       # ASR 忙时积压的语音段 [(channel, wav)]
         self._qa_pending_text = []    # 上次回答之后识别出的面试官讲话
         self._convo = []              # 面试对话记录 ["面试官：…", "我：…"]
+        self._me_speaking_shown = False  # 答案区是否已显示「我：( 正在说话 )」指示
 
         # WindowDoesNotAcceptFocus + WA_ShowWithoutActivating：
         # 本窗口可正常点击/拖动，但永远不会从浏览器抢走键盘焦点，
@@ -1693,6 +1694,7 @@ class MainWindow(QWidget):
                     return
             self._qa_pending_text = []
             self._pending_wavs = []
+            self._me_speaking_shown = False
             self.answer.clear()
             self._ans_append(
                 "<span style='color:#8a93a6'>🎙 问答模式已开启，正在监听会议声音…<br>"
@@ -1870,11 +1872,16 @@ class MainWindow(QWidget):
             self.status.setText(f"语音识别失败：{err[:60]}")
         elif text:
             if channel == "me":
-                self._ans_append(
-                    f"<span style='color:#9fd0a0'>我：{html.escape(text)}</span>")
+                # 我的讲话完整转写会刷屏顶掉问题+答案，答案区只显示一行轻量指示；
+                # 内容本身照常写入对话记录，供下一轮上下文使用
+                if not self._me_speaking_shown:
+                    self._ans_append(
+                        "<span style='color:#9fd0a0'>我：( 正在说话 )</span>")
+                    self._me_speaking_shown = True
                 if self.interview_btn.isChecked():
                     self._convo.append(f"我：{text}")
             else:
+                self._me_speaking_shown = False  # 面试官插话，重置指示
                 self._qa_pending_text.append(text)
                 self._ans_append(
                     f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
@@ -1943,6 +1950,7 @@ class MainWindow(QWidget):
         question = "\n".join(pending)
         self._qa_pending_text = []
         self.answer.clear()  # 只显示当前问题 + 回答
+        self._me_speaking_shown = False
         self._ans_append(f"<b>❓ {html.escape(question[:120])}</b>")
         snap = dict(self.cfg.data)
         if self.interview_btn.isChecked():

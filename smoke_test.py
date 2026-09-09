@@ -380,6 +380,18 @@ assert ps16.base_dir() == _tmp_profile
 del os.environ["PROFILE_DIR"]
 assert ps16.base_dir().endswith("profile") and "答题助手" in ps16.base_dir()
 os.environ["PROFILE_DIR"] = _tmp_profile  # 恢复临时目录，防污染真实资料库
+# 麦克风讲话在答案区只显示一行「正在说话」指示，不刷屏
+win.answer.clear()
+win._me_speaking_shown = False
+win._on_transcript("me", "第一句话", None)
+win._on_transcript("me", "第二句话", None)
+assert win.answer.toPlainText().count("正在说话") == 1
+win._on_transcript("interviewer", "面试官插话", None)
+assert not win._me_speaking_shown  # 面试官插话后重置
+win._on_transcript("me", "第三句话", None)
+assert win.answer.toPlainText().count("正在说话") == 2  # 新一轮讲话再显示一次
+win.answer.clear()
+win._qa_pending_text = []
 print("✓ 上下文去重/资料库稳定目录就位")
 print("✓ 全部冒烟测试通过")
 
