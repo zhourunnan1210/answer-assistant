@@ -360,6 +360,23 @@ win._auto_answer_timer.start()
 win._toggle_qa(False)
 assert not win._auto_answer_timer.isActive()
 print("✓ 面试自动作答就位（3 秒静默触发/开关/模式关闭停止计时）")
+
+# 16. 上下文去重 + 资料库目录稳定性
+win._convo = ["面试官：介绍一下自己", "我：我是……", "面试官：项目中遇到什么难题"]
+convo16 = win._convo_for_llm(["项目中遇到什么难题"])
+assert "项目中遇到什么难题" not in convo16  # 本轮问题从对话记录剔除，避免重复
+assert "介绍一下自己" in convo16 and "我：我是……" in convo16
+# 多条 pending 逐条剔除；不在记录里的行不影响
+win._convo = ["面试官：A", "面试官：B"]
+assert win._convo_for_llm(["A", "B", "C"]) == ""
+# 资料库目录：PROFILE_DIR 覆盖优先；非打包版回退到源码目录 profile/
+import profile_store as ps16
+_tmp_profile = os.environ["PROFILE_DIR"]
+assert ps16.base_dir() == _tmp_profile
+del os.environ["PROFILE_DIR"]
+assert ps16.base_dir().endswith("profile") and "答题助手" in ps16.base_dir()
+os.environ["PROFILE_DIR"] = _tmp_profile  # 恢复临时目录，防污染真实资料库
+print("✓ 上下文去重/资料库稳定目录就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

@@ -1889,6 +1889,18 @@ class MainWindow(QWidget):
         while self._convo and sum(len(x) for x in self._convo) > ps.CONVO_MAX_CHARS:
             self._convo.pop(0)
 
+    def _convo_for_llm(self, pending):
+        """对话记录快照：剔除与本轮问题重复的面试官行
+        （转写时已实时写入 _convo，而问题会单独放在【面试官最新讲话】段）。"""
+        lines = list(self._convo)
+        for t in pending:
+            target = f"面试官：{t}"
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i] == target:
+                    lines.pop(i)
+                    break
+        return "\n".join(lines)
+
     # ---- 面试自动作答（3 秒静默触发）----
 
     def _auto_answer_kick(self):
@@ -1917,13 +1929,14 @@ class MainWindow(QWidget):
         if not self._qa_pending_text:
             self.status.setText("还没有识别到讲话内容")
             return
-        question = "\n".join(self._qa_pending_text)
+        pending = list(self._qa_pending_text)
+        question = "\n".join(pending)
         self._qa_pending_text = []
         self.answer.append(f"<b>❓ {html.escape(question[:120])}</b>")
         snap = dict(self.cfg.data)
         if self.interview_btn.isChecked():
             self.status.setText("正在结合资料库与对话上下文生成回答…")
-            convo = "\n".join(self._convo)
+            convo = self._convo_for_llm(pending)
             fn = lambda: ask_interview(snap, question, convo=convo)  # noqa: E731
         else:
             self.status.setText("正在生成回答…")

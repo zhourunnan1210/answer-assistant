@@ -108,7 +108,20 @@ DEFAULTS = {
 
 def config_dir() -> str:
     if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
+        # 打包版：exe 同级目录会随重装/覆盖安装/重打包被清空，
+        # 配置放到用户级稳定目录 %LOCALAPPDATA%\答题助手\，并从旧位置迁移一次。
+        root = os.path.join(
+            os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "答题助手")
+        old = os.path.join(os.path.dirname(sys.executable), "config.json")
+        new = os.path.join(root, "config.json")
+        if not os.path.exists(new) and os.path.exists(old):
+            try:
+                os.makedirs(root, exist_ok=True)
+                import shutil
+                shutil.copy2(old, new)
+            except OSError:
+                pass
+        return root
     return os.path.dirname(os.path.abspath(__file__))
 
 

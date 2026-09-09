@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """个人资料库：固定文稿 + 灵活文稿 + 原始资料，供面试辅助组装上下文。
 
-存储位置：exe/脚本同目录的 profile/ 文件夹（可用环境变量 PROFILE_DIR 覆盖，
+存储位置：打包版为用户级稳定目录 %LOCALAPPDATA%\\答题助手\\profile\\
+（exe 同级目录会随重装/重打包被清空，旧位置会自动迁移一次）；
+源码运行为脚本同目录的 profile/ 文件夹（可用环境变量 PROFILE_DIR 覆盖，
 便于测试）：
   fixed_profile.md    固定文稿（个人介绍 + 过往项目介绍），可手动编辑
   flexible_docs.json  灵活文稿 [{id, title, keywords, content}]
@@ -23,10 +25,18 @@ def base_dir() -> str:
     if override:
         return override
     if getattr(sys, "frozen", False):
-        root = os.path.dirname(sys.executable)
-    else:
-        root = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(root, "profile")
+        new = os.path.join(
+            os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+            "答题助手", "profile")
+        old = os.path.join(os.path.dirname(sys.executable), "profile")
+        if not os.path.exists(new) and os.path.isdir(old):
+            try:
+                os.makedirs(os.path.dirname(new), exist_ok=True)
+                shutil.copytree(old, new)
+            except OSError:
+                pass
+        return new
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "profile")
 
 
 def fixed_path() -> str:
