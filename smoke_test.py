@@ -324,6 +324,42 @@ ed._render_preview()
 assert "新标题" in ed.preview.toPlainText()
 assert hasattr(dlg, "_open_fixed_editor")
 print("✓ Markdown 编辑器就位（编辑/预览/分屏/meta）")
+
+# 15. 面试自动作答（3 秒静默触发）
+import config as _cfg_mod
+assert _cfg_mod.DEFAULTS.get("interview_auto_answer") is True
+assert hasattr(dlg, "iv_auto") and dlg.iv_auto.isChecked()
+snap15 = dlg._snapshot()
+assert "interview_auto_answer" in snap15
+assert win._auto_answer_timer.interval() == 3000
+assert win._auto_answer_timer.isSingleShot()
+# pending 为空时不动作（阻断信号，避免 toggled 触发完整开关流程）
+win._auto_answer_timer.stop()
+win._qa_pending_text = []
+win.interview_btn.blockSignals(True)
+win.qa_btn.blockSignals(True)
+win.interview_btn.setChecked(True)
+win._auto_answer_tick()
+assert not win._auto_answer_timer.isActive()
+# 有 pending 时自动触发作答（无 API key，线程内报错安全），pending 被消费
+win.qa_btn.setChecked(True)
+win._qa_pending_text = ["请介绍一下你自己"]
+win._auto_answer_tick()
+assert win._qa_pending_text == []
+# 开关关闭时 kick 不启动计时
+win.cfg.data["interview_auto_answer"] = False
+win._auto_answer_kick()
+assert not win._auto_answer_timer.isActive()
+win.cfg.data["interview_auto_answer"] = True
+# 关闭面试/问答模式时计时器停止
+win._auto_answer_timer.start()
+win.interview_btn.setChecked(False)
+win._toggle_interview(False)
+assert not win._auto_answer_timer.isActive()
+win._auto_answer_timer.start()
+win._toggle_qa(False)
+assert not win._auto_answer_timer.isActive()
+print("✓ 面试自动作答就位（3 秒静默触发/开关/模式关闭停止计时）")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

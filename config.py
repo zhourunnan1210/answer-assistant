@@ -100,6 +100,7 @@ DEFAULTS = {
     "asr_model": "FunAudioLLM/SenseVoiceSmall",
     # ---- 面试辅助（简历上下文 + 面试提示词）----
     "interview_prompt": INTERVIEW_PROMPT,  # 面试专用提示词
+    "interview_auto_answer": True,         # 面试模式：面试官静默 3 秒自动作答
     "resume_name": "",                     # 已加载简历的文件名（仅用于显示）
     "resume_text": "",                     # 简历解析后的纯文本
 }

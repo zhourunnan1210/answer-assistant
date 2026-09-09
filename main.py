@@ -832,6 +832,13 @@ class SettingsDialog(QDialog):
         self.interview_prompt.setFixedHeight(130)
         form_iv.addRow("面试提示词", self.interview_prompt)
 
+        self.iv_auto = QCheckBox("自动作答：面试官停止讲话 3 秒后自动生成回答（推荐开启）")
+        self.iv_auto.setToolTip(
+            "开启后无需按 Ctrl+Alt+W：每次识别到面试官讲话都会重置计时，\n"
+            "静默满 3 秒即自动把问题发给模型；手动按钮/快捷键依然可用。")
+        self.iv_auto.setChecked(bool(cfg.data.get("interview_auto_answer", True)))
+        form_iv.addRow("自动作答", self.iv_auto)
+
         # ================= 页 4：通用 =================
         page_gen = QWidget()
         form_gen = QFormLayout(page_gen)
@@ -1213,6 +1220,7 @@ class SettingsDialog(QDialog):
             "qa_prompt": self.qa_prompt.toPlainText().strip() or QA_PROMPT,
             "interview_prompt": (self.interview_prompt.toPlainText().strip()
                                  or INTERVIEW_PROMPT),
+            "interview_auto_answer": self.iv_auto.isChecked(),
             "asr_source": ("local" if self.asr_src_local.isChecked() else "cloud"),
             "asr_use_same_key": self.asr_same.isChecked(),
             "asr_base_url": self.asr_base_url.text().strip(),
@@ -1433,6 +1441,12 @@ class MainWindow(QWidget):
         self._immersive_timer.timeout.connect(self._immersive_tick)
         self._immersive_hidden = False
         self._immersive_geo = None   # 隐藏前的窗口几何，用于恢复
+
+        # 面试自动作答：面试官每次讲话后重置计时，静默满 3 秒自动触发
+        self._auto_answer_timer = QTimer(self)
+        self._auto_answer_timer.setSingleShot(True)
+        self._auto_answer_timer.setInterval(3000)
+        self._auto_answer_timer.timeout.connect(self._auto_answer_tick)
 
         self._apply_panel_style()
 
@@ -1698,6 +1712,7 @@ class MainWindow(QWidget):
             self._sync_immersive_timer()
         else:
             self._stop_capture()
+            self._auto_answer_timer.stop()
             if self.interview_btn.isChecked():
                 self.interview_btn.setChecked(False)  # 面试模式依赖问答监听
             self.qa_btn.setText("🎙 问答")
@@ -1734,6 +1749,7 @@ class MainWindow(QWidget):
             self.status.setText("面试辅助：双通道监听中（面试官 + 我）")
             self._sync_immersive_timer()
         else:
+            self._auto_answer_timer.stop()
             self._stop_mic()
             self.interview_btn.setText("💼 面试")
             if self.qa_btn.isChecked():
@@ -1858,6 +1874,7 @@ class MainWindow(QWidget):
                     f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
                 if self.interview_btn.isChecked():
                     self._convo.append(f"面试官：{text}")
+                    self._auto_answer_kick()  # 重置 3 秒静默计时
             self._trim_convo()
         if self._pending_wavs:
             # 取队首通道的同通道语音段合并识别，避免面试官/我的声音混在一段
@@ -1871,6 +1888,23 @@ class MainWindow(QWidget):
         import profile_store as ps
         while self._convo and sum(len(x) for x in self._convo) > ps.CONVO_MAX_CHARS:
             self._convo.pop(0)
+
+    # ---- 面试自动作答（3 秒静默触发）----
+
+    def _auto_answer_kick(self):
+        """面试官每说一句就重置计时；静默满 3 秒由 _auto_answer_tick 触发。"""
+        if (self.interview_btn.isChecked()
+                and self.cfg.data.get("interview_auto_answer", True)):
+            self._auto_answer_timer.start()
+
+    def _auto_answer_tick(self):
+        if not self.interview_btn.isChecked() or not self._qa_pending_text:
+            return
+        if self._qa_thread is not None and self._qa_thread.isRunning():
+            self._auto_answer_timer.start()  # 上一个回答还在生成，3 秒后再试
+            return
+        self.status.setText("检测到 3 秒静默，自动作答…")
+        self._qa_answer()
 
     def _qa_answer(self):
         """Ctrl+Alt+W 或按钮：把识别到的讲话内容发给 LLM 生成口语化回答。"""
@@ -1908,6 +1942,9 @@ class MainWindow(QWidget):
             body = html.escape(text).replace("\n", "<br>")
             self.answer.append(
                 f"<span style='color:#f2f4f8'>💬 {body}</span><br>")
+        # 生成期间面试官又讲了新内容 → 重新计时，静默 3 秒后自动跟进
+        if self._qa_pending_text:
+            self._auto_answer_kick()
 
     # ---- 预设快捷切换 ----
 
