@@ -188,6 +188,40 @@ win.interview_btn.setChecked(False)
 win.qa_btn.setChecked(False)
 win.cfg.data["resume_text"] = ""
 print("✓ 面试辅助链路就位（文档解析/简历配置/UI 联动）")
+
+# 11. 沉浸式模式：开关、联动条件、收缩/恢复几何
+assert "immersive_mode" in cfg2.data and cfg2.data["immersive_mode"] is False
+snap4 = dlg._snapshot()
+assert "immersive_mode" in snap4 and isinstance(snap4["immersive_mode"], bool)
+assert hasattr(dlg, "immersive"), "通用页缺少沉浸式开关"
+assert "immersive_mode" not in win.PROFILE_KEYS, "沉浸式开关不应随预设变化"
+assert hasattr(win, "_immersive_timer") and hasattr(win, "_set_immersive_ui")
+win.cfg.data["immersive_mode"] = True
+assert not win._immersive_engaged(), "未开问答/面试时不应生效"
+win.qa_btn.setChecked(True)
+assert win._immersive_engaged()
+win._immersive_timer.stop()  # 手动测试收缩/恢复，避免轮询干扰断言
+win.show()
+app.processEvents()
+geo0 = win.geometry()
+win._set_immersive_ui(False)
+app.processEvents()
+assert win._immersive_hidden
+assert not win.ask_btn.isVisible() and not win.profile_bar.isVisible()
+assert not win.qa_answer_btn.isVisible()  # 问答按钮也随外壳隐藏
+assert win.answer.isVisible()
+g = win.geometry()
+assert abs(g.width() - win.answer.width()) < 60 and g.height() < geo0.height()
+win._set_immersive_ui(True)
+app.processEvents()
+assert not win._immersive_hidden and win.ask_btn.isVisible()
+assert win.geometry().size() == geo0.size(), "恢复后窗口尺寸应一致"
+assert win.qa_answer_btn.isVisible(), "问答模式下恢复时回答按钮应可见"
+win.qa_btn.setChecked(False)
+assert not win._immersive_engaged() and not win._immersive_timer.isActive()
+assert not win._immersive_hidden, "关闭问答后应恢复完整 UI"
+win.cfg.data["immersive_mode"] = False
+print("✓ 沉浸式模式就位（联动/收缩/恢复几何正确）")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

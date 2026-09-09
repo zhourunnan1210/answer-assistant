@@ -11,8 +11,8 @@ from PySide6.QtCore import (Qt, QAbstractNativeEventFilter, QBuffer, QEvent,
                             QIODevice, QObject, QPoint, QRect, QThread,
                             QTimer, Signal)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtGui import (QColor, QGuiApplication, QIcon, QImage, QPainter,
-                           QPen, QPixmap)
+from PySide6.QtGui import (QColor, QCursor, QGuiApplication, QIcon, QImage,
+                           QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -705,6 +705,15 @@ class SettingsDialog(QDialog):
         op_row.addWidget(self.opacity_label)
         form_gen.addRow("窗口不透明度", op_row)
 
+        self.immersive = QCheckBox("沉浸式模式（问答/面试时）")
+        self.immersive.setToolTip(
+            "开启后，在问答/面试模式下：\n"
+            "· 鼠标移入答案区 → 显示完整界面；\n"
+            "· 鼠标离开窗口 → 自动隐藏标题栏和按钮，只保留答案区。\n"
+            "（鼠标在窗口内其他按钮上时不会隐藏，放心点击）")
+        self.immersive.setChecked(bool(cfg.data.get("immersive_mode", False)))
+        form_gen.addRow("沉浸式", self.immersive)
+
         # ================= 侧栏 + 卡片页 =================
         self.pages = QStackedWidget()
         self.pages.addWidget(page_model)
@@ -882,6 +891,7 @@ class SettingsDialog(QDialog):
             "hotkey": self.hotkey.currentText(),
             "font_size": self.font_size.value(),
             "window_opacity": self.opacity.value() / 100,
+            "immersive_mode": self.immersive.isChecked(),
             "qa_prompt": self.qa_prompt.toPlainText().strip() or QA_PROMPT,
             "interview_prompt": (self.interview_prompt.toPlainText().strip()
                                  or INTERVIEW_PROMPT),
@@ -1026,6 +1036,9 @@ class MainWindow(QWidget):
         for b in (self.top_btn, set_btn, min_btn, close_btn):
             bar.addWidget(b)
         lay.addLayout(bar)
+        # 沉浸式模式下可被隐藏的「外壳」控件（答案区始终保留）
+        self._chrome = [title, self.profile_bar, self.top_btn,
+                        set_btn, min_btn, close_btn]
 
         # 答案区
         self.answer = QTextEdit(readOnly=True,
@@ -1083,6 +1096,16 @@ class MainWindow(QWidget):
         grip.setToolTip("拖拽调整窗口大小")
         ops.addWidget(grip, 0, Qt.AlignBottom | Qt.AlignRight)
         lay.addLayout(ops)
+        # qa_answer_btn 不进 _chrome：它的可见性由问答/面试开关单独管理
+        self._chrome += [self.status, self.region_btn, self.ask_btn,
+                         self.qa_btn, self.interview_btn, grip]
+
+        # 沉浸式模式：轮询鼠标位置，自动隐藏/显示外壳 UI
+        self._immersive_timer = QTimer(self)
+        self._immersive_timer.setInterval(150)
+        self._immersive_timer.timeout.connect(self._immersive_tick)
+        self._immersive_hidden = False
+        self._immersive_geo = None   # 隐藏前的窗口几何，用于恢复
 
         self.setStyleSheet(_panel_style())
 
@@ -1331,6 +1354,7 @@ class MainWindow(QWidget):
                 import asr_local
                 _th.Thread(target=asr_local.warmup, daemon=True).start()
             self.status.setText("问答模式：监听系统声音中…")
+            self._sync_immersive_timer()
         else:
             self._stop_capture()
             if self.interview_btn.isChecked():
@@ -1338,6 +1362,7 @@ class MainWindow(QWidget):
             self.qa_btn.setText("🎙 问答")
             self.qa_answer_btn.setVisible(False)
             self.status.setText("问答模式已关闭")
+            self._sync_immersive_timer()
 
     def _toggle_interview(self, on: bool):
         """面试辅助：复用问答监听，回答时携带简历上下文。"""
@@ -1357,10 +1382,65 @@ class MainWindow(QWidget):
                 f"<span style='color:#8a93a6'>💼 面试辅助已开启，"
                 f"回答将结合「{html.escape(name)}」生成。</span>")
             self.status.setText("面试辅助：回答将结合简历生成")
+            self._sync_immersive_timer()
         else:
             self.interview_btn.setText("💼 面试")
             if self.qa_btn.isChecked():
                 self.status.setText("面试辅助已关闭（问答监听仍在运行）")
+            self._sync_immersive_timer()
+
+    # ---- 沉浸式模式（问答/面试时只留答案区）----
+
+    def _immersive_engaged(self) -> bool:
+        """沉浸式是否生效：总开关打开 且 问答或面试模式正在运行。"""
+        return (bool(self.cfg.data.get("immersive_mode"))
+                and (self.qa_btn.isChecked() or self.interview_btn.isChecked()))
+
+    def _sync_immersive_timer(self):
+        if self._immersive_engaged():
+            self._immersive_timer.start()
+        else:
+            self._immersive_timer.stop()
+            self._set_immersive_ui(True)
+
+    def _immersive_tick(self):
+        """150ms 轮询鼠标位置：
+        移入答案区 -> 显示完整 UI；完全离开窗口 -> 收缩为纯答案区；
+        在窗口内但不在答案区（如正移向按钮）-> 保持现状，按钮可正常点击。"""
+        if not self._immersive_engaged():
+            self._sync_immersive_timer()
+            return
+        pos = QCursor.pos()
+        answer_rect = QRect(self.answer.mapToGlobal(QPoint(0, 0)),
+                            self.answer.size())
+        if answer_rect.contains(pos):
+            if self._immersive_hidden:
+                self._set_immersive_ui(True)
+        elif not self.geometry().contains(pos):
+            if not self._immersive_hidden:
+                self._set_immersive_ui(False)
+
+    def _set_immersive_ui(self, show: bool):
+        if show == (not self._immersive_hidden):
+            return
+        if not show:
+            self._immersive_geo = self.geometry()
+            for w in self._chrome:
+                w.hide()
+            self.qa_answer_btn.hide()
+            # 窗口收缩到答案区的屏幕位置，答案内容原地不动
+            rect = QRect(self.answer.mapToGlobal(QPoint(0, 0)),
+                         self.answer.size())
+            self.setGeometry(rect)
+            self._immersive_hidden = True
+        else:
+            self._immersive_hidden = False
+            for w in self._chrome:
+                w.show()
+            self.qa_answer_btn.setVisible(
+                self.qa_btn.isChecked() or self.interview_btn.isChecked())
+            if self._immersive_geo is not None:
+                self.setGeometry(self._immersive_geo)
 
     def _stop_capture(self):
         t = self._cap_thread
@@ -1496,9 +1576,17 @@ class MainWindow(QWidget):
             self.status.setText(f"预设「{name}」已切换，连接测试通过 ✅")
             self._refresh_hint()
 
+    def _save_win_size(self):
+        """记住窗口大小；沉浸式隐藏状态下恢复隐藏前尺寸，避免保存收缩态。"""
+        if self._immersive_hidden and self._immersive_geo is not None:
+            g = self._immersive_geo
+            self.cfg.set("win_size", [g.width(), g.height()])
+        else:
+            self.cfg.set("win_size", [self.width(), self.height()])
+
     def _quit_app(self):
         self._stop_capture()
-        self.cfg.set("win_size", [self.width(), self.height()])
+        self._save_win_size()
         self.cfg.save()
         for hid in self.ALL_HOTKEY_IDS:
             ctypes.windll.user32.UnregisterHotKey(None, hid)
@@ -1509,7 +1597,7 @@ class MainWindow(QWidget):
         self._stop_capture()
         for hid in self.ALL_HOTKEY_IDS:
             ctypes.windll.user32.UnregisterHotKey(None, hid)
-        self.cfg.set("win_size", [self.width(), self.height()])
+        self._save_win_size()
         self.cfg.save()
         super().closeEvent(e)
 
@@ -1525,6 +1613,7 @@ class MainWindow(QWidget):
             self._apply_font_size()
             self._apply_capture_immunity()
             self._reload_profile_bar()  # 预设可能被增删，刷新标题栏下拉
+            self._sync_immersive_timer()  # 沉浸式开关可能变化
             if (self.monitor_btn is not None and self.monitor_btn.isChecked()):
                 self.monitor_timer.start(self.cfg.monitor_interval_ms)
 

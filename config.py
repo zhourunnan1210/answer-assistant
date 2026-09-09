@@ -56,6 +56,7 @@ DEFAULTS = {
     "hotkey": "Ctrl+Alt+Q",              # 全局触发识别的快捷键
     "font_size": 14,                     # 答案区字号（px）
     "win_size": None,                    # 记住窗口大小 [w, h]
+    "immersive_mode": False,             # 沉浸式：问答/面试时鼠标离开窗口自动只留答案区
     "profiles": {},                      # 我的预设：{名称: {provider, base_url, api_key, model, thinking}}
     # ---- 问答助手（语音识别 + 文本问答）----
     "qa_prompt": QA_PROMPT,              # 问答专用提示词
