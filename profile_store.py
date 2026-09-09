@@ -14,10 +14,10 @@ import os
 import shutil
 import sys
 
-FIXED_MAX_CHARS = 4000     # 注入上下文的固定文稿上限
-FLEX_DOC_MAX_CHARS = 1500  # 注入上下文的单篇灵活文稿上限
+FIXED_MAX_CHARS = 8000     # 注入上下文的固定文稿上限
+FLEX_DOC_MAX_CHARS = 3000  # 注入上下文的单篇灵活文稿上限
 FLEX_MAX_HITS = 2          # 单次最多注入的灵活文稿篇数
-CONVO_MAX_CHARS = 3000     # 注入上下文的对话记录上限（滚动窗口）
+CONVO_MAX_CHARS = 5000     # 注入上下文的对话记录上限（滚动窗口）
 
 
 def base_dir() -> str:

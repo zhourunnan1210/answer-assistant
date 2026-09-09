@@ -238,8 +238,8 @@ def build_flexible_docs(cfg: dict, fixed_text: str, raw_texts: list) -> list:
     if not (fixed_text or "").strip():
         raise LlmError("请先生成或填写固定文稿。")
     blob = "\n\n".join(f"【{name}】\n{text}" for name, text in raw_texts)
-    content = (FLEX_BUILD_PROMPT + "\n\n【固定文稿】\n" + fixed_text[:8000]
-               + ("\n\n【原始资料】\n" + blob[:12000] if blob else ""))
+    content = (FLEX_BUILD_PROMPT + "\n\n【固定文稿】\n" + fixed_text[:12000]
+               + ("\n\n【原始资料】\n" + blob[:20000] if blob else ""))
     out = _plain_chat(cfg, content)
     docs = _parse_docs_json(out)
     if not docs:
