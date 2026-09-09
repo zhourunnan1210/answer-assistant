@@ -14,6 +14,8 @@ import llm
 import main as app_main
 
 # 1. 配置读写
+import tempfile
+os.environ["PROFILE_DIR"] = tempfile.mkdtemp()  # 资料库指向临时目录，避免污染真实数据
 cfg = config.AppConfig.load()
 cfg.set("model", "test-model")
 cfg.save()
@@ -171,11 +173,13 @@ assert "interview_prompt" in win.PROFILE_KEYS, "预设应包含面试提示词"
 assert callable(llm.ask_interview)
 try:
     llm.ask_interview({"api_key": "k", "model": "m"}, "问题")
-    raise SystemExit("无简历时应抛错")
+    raise SystemExit("无资料库时应抛错")
 except llm.LlmError as _e:
-    assert "简历" in str(_e)
+    assert "资料库" in str(_e)
 assert hasattr(win, "interview_btn") and hasattr(dlg, "interview_prompt")
-assert hasattr(dlg, "_pick_resume") and hasattr(dlg, "_clear_resume")
+assert hasattr(dlg, "fixed_editor") and hasattr(dlg, "flex_list"), "资料库 UI 缺失"
+assert hasattr(dlg, "_upload_raw") and hasattr(dlg, "_gen_fixed")
+assert hasattr(dlg, "_gen_flex") and hasattr(dlg, "_edit_flex")
 # 未加载简历时面试开关应被拒绝
 win.cfg.data["resume_text"] = ""
 win.interview_btn.setChecked(True)
@@ -241,6 +245,66 @@ win.cfg.data["answer_bg_opacity"] = 0.05
 win._apply_panel_style()
 win._apply_answer_style()
 print("✓ 区域背景透明度就位（UI 区/答案区独立，且不入预设）")
+
+# 13. 个人资料库：CRUD、检索、上下文组装、双通道采集
+import profile_store as ps
+ps.save_fixed("# 个人介绍\n张三，3 年 Python 后端")
+assert ps.load_fixed().startswith("# 个人介绍")
+_docs = [
+    {"id": 1, "title": "推荐系统项目技术细节", "keywords": ["推荐系统", "召回", "排序"],
+     "content": "负责召回层优化，QPS 提升 40%"},
+    {"id": 2, "title": "订单系统高并发改造", "keywords": ["订单", "高并发", "秒杀"],
+     "content": "引入消息队列削峰，扛住 10w QPS"},
+]
+ps.save_flex(_docs)
+assert len(ps.load_flex()) == 2
+assert "推荐系统" in ps.flex_index(_docs)
+_hits = ps.retrieve("讲讲你在推荐系统里做召回遇到什么问题", _docs)
+assert _hits and _hits[0]["id"] == 1, _hits
+assert ps.retrieve("今天天气怎么样", []) == []
+# 原始资料
+_raw_src = os.path.join(_tmp, "项目说明.txt")
+with open(_raw_src, "w", encoding="utf-8") as _f:
+    _f.write("推荐系统项目：负责召回与排序模块")
+ps.add_raw(_raw_src)
+assert "项目说明.txt" in ps.list_raw()
+_raw_texts = ps.read_raw_texts()
+assert _raw_texts and "召回" in _raw_texts[0][1]
+ps.clear_raw()
+assert ps.list_raw() == []
+# 上下文组装：固定文稿 + 索引 + 命中专题 + 对话记录 + 问题
+content = llm.build_interview_content(
+    {"api_key": "k", "model": "m"}, "召回层是怎么优化的？",
+    convo="面试官：介绍下推荐系统项目\n我：我负责召回层")
+assert "【固定文稿】" in content and "【专题资料索引】" in content
+assert "QPS 提升 40%" in content, "命中的专题应注入全文"
+assert "面试官：介绍下推荐系统项目" in content
+assert "【面试官最新讲话】" in content
+# 超长截断
+ps.save_fixed("长" * 6000)
+_c2 = llm.build_interview_content({"api_key": "k", "model": "m"}, "无关问题 xyz")
+assert "长" * ps.FIXED_MAX_CHARS in _c2
+assert "长" * (ps.FIXED_MAX_CHARS + 1) not in _c2, "固定文稿应按上限截断"
+# 旧版简历字段回退兼容
+ps.save_fixed("")
+_c3 = llm.build_interview_content(
+    {"api_key": "k", "model": "m", "resume_text": "旧版简历内容"}, "问题")
+assert "旧版简历内容" in _c3
+# 文稿 JSON 解析
+_parsed = llm._parse_docs_json('```json\n[{"title":"t","content":"c"}]\n```')
+assert _parsed and _parsed[0]["title"] == "t"
+assert llm._parse_docs_json("没有JSON") == []
+# 双通道采集类
+assert hasattr(audio_capture, "MicCapture") and hasattr(audio_capture, "_VadCapture")
+assert issubclass(audio_capture.MicCapture, audio_capture._VadCapture)
+assert issubclass(audio_capture.LoopbackCapture, audio_capture._VadCapture)
+# 主窗口双通道接线
+assert hasattr(win, "_mic_bridge") and hasattr(win, "_on_mic_utterance")
+assert hasattr(win, "_convo") and hasattr(win, "_trim_convo")
+win._convo = ["x" * 2000] * 3
+win._trim_convo()
+assert sum(len(x) for x in win._convo) <= ps.CONVO_MAX_CHARS
+print("✓ 资料库/检索/上下文组装/双通道就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

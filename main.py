@@ -22,8 +22,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QTextEdit, QVBoxLayout, QWidget)
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT
-from audio_capture import LoopbackCapture, merge_wavs
-from llm import (AUTO_PROMPT, ask_interview, ask_text, ask_vision, fetch_models,
+from audio_capture import LoopbackCapture, MicCapture, merge_wavs
+from llm import (AUTO_PROMPT, ask_interview, ask_text, ask_vision,
+                 build_fixed_profile, build_flexible_docs, fetch_models,
                  test_asr, test_connection, transcribe_audio)
 
 def combo_arrow_path() -> str:
@@ -645,33 +646,83 @@ class SettingsDialog(QDialog):
         form_iv.setSpacing(10)
         form_iv.setContentsMargins(4, 4, 4, 4)
 
-        iv_note = QLabel("面试辅助建立在问答模式之上：监听面试官讲话，"
-                         "生成回答时自动带上你的简历内容，让回答贴合你的真实经历。")
+        iv_note = QLabel("面试辅助 = 双通道监听（面试官 + 你）+ 个人资料库。\n"
+                         "信息初始化：① 上传简历/资料 → ② 生成固定文稿 → ③ 生成灵活文稿。"
+                         "面试时回答会贴合你的真实经历，并跟上对话上下文。")
         iv_note.setWordWrap(True)
         iv_note.setStyleSheet("color:#8fb8ff; font-size:11px;")
         form_iv.addRow("", iv_note)
 
-        resume_row = QHBoxLayout()
-        pick_btn = QPushButton("选择简历文件…")
-        pick_btn.setToolTip("支持 PDF / Word(.docx) / TXT / Markdown，"
-                            "自动提取文字内容（仅存文字，不上传文件本身）")
-        pick_btn.clicked.connect(self._pick_resume)
-        clear_btn = QPushButton("清空")
-        clear_btn.clicked.connect(self._clear_resume)
-        resume_row.addWidget(pick_btn)
-        resume_row.addWidget(clear_btn)
-        resume_row.addStretch()
-        form_iv.addRow("简历/文档", resume_row)
+        # ---- ① 原始资料 ----
+        raw_row = QHBoxLayout()
+        up_raw_btn = QPushButton("上传资料…")
+        up_raw_btn.setToolTip("支持 PDF / Word(.docx) / TXT / Markdown，可多选；"
+                              "文件备份在程序目录 profile/raw/ 下")
+        up_raw_btn.clicked.connect(self._upload_raw)
+        clr_raw_btn = QPushButton("清空")
+        clr_raw_btn.clicked.connect(self._clear_raw)
+        raw_row.addWidget(up_raw_btn)
+        raw_row.addWidget(clr_raw_btn)
+        raw_row.addStretch()
+        form_iv.addRow("① 原始资料", raw_row)
+        self.raw_label = QLabel()
+        self.raw_label.setWordWrap(True)
+        self.raw_label.setStyleSheet("font-size:11px;")
+        self._refresh_raw_label()
+        form_iv.addRow("", self.raw_label)
 
-        self.resume_label = QLabel()
-        self.resume_label.setWordWrap(True)
-        self.resume_label.setStyleSheet("font-size:11px;")
-        self._refresh_resume_label()
-        form_iv.addRow("", self.resume_label)
+        # ---- ② 固定文稿 ----
+        fixed_btns = QHBoxLayout()
+        gen_fixed_btn = QPushButton("AI 生成/重新生成")
+        gen_fixed_btn.setToolTip("用当前预设的模型，把原始资料整理成固定文稿；"
+                                 "生成后可继续在下方手动修改")
+        gen_fixed_btn.clicked.connect(self._gen_fixed)
+        imp_fixed_btn = QPushButton("从文件导入…")
+        imp_fixed_btn.clicked.connect(self._import_fixed)
+        fixed_btns.addWidget(gen_fixed_btn)
+        fixed_btns.addWidget(imp_fixed_btn)
+        fixed_btns.addStretch()
+        form_iv.addRow("② 固定文稿", fixed_btns)
+        import profile_store as _ps
+        self.fixed_editor = QPlainTextEdit(
+            _ps.load_fixed() or (cfg.data.get("resume_text") or ""))
+        self.fixed_editor.setPlaceholderText(
+            "个人介绍 + 过往项目介绍。可点「AI 生成」，也可直接粘贴/手动编辑。")
+        self.fixed_editor.setFixedHeight(120)
+        form_iv.addRow("", self.fixed_editor)
+        self.fixed_label = QLabel()
+        self.fixed_label.setStyleSheet("color:#9aa3b2; font-size:11px;")
+        form_iv.addRow("", self.fixed_label)
+        self.fixed_editor.textChanged.connect(self._refresh_fixed_label)
+        self._refresh_fixed_label()
+
+        # ---- ③ 灵活文稿 ----
+        flex_btns = QHBoxLayout()
+        gen_flex_btn = QPushButton("AI 生成/重新生成")
+        gen_flex_btn.setToolTip("基于固定文稿+原始资料生成 3~8 篇专题文稿，"
+                                "覆盖项目技术细节、问题与解决等追问点")
+        gen_flex_btn.clicked.connect(self._gen_flex)
+        edit_flex_btn = QPushButton("编辑选中")
+        edit_flex_btn.clicked.connect(self._edit_flex)
+        del_flex_btn = QPushButton("删除选中")
+        del_flex_btn.clicked.connect(self._del_flex)
+        flex_btns.addWidget(gen_flex_btn)
+        flex_btns.addWidget(edit_flex_btn)
+        flex_btns.addWidget(del_flex_btn)
+        flex_btns.addStretch()
+        form_iv.addRow("③ 灵活文稿", flex_btns)
+        self.flex_list = QListWidget()
+        self.flex_list.setFixedHeight(88)
+        self.flex_list.itemDoubleClicked.connect(lambda _i: self._edit_flex())
+        form_iv.addRow("", self.flex_list)
+        self.flex_label = QLabel()
+        self.flex_label.setStyleSheet("color:#9aa3b2; font-size:11px;")
+        form_iv.addRow("", self.flex_label)
+        self._refresh_flex_list()
 
         self.interview_prompt = QPlainTextEdit(
             cfg.data.get("interview_prompt") or INTERVIEW_PROMPT)
-        self.interview_prompt.setFixedHeight(150)
+        self.interview_prompt.setFixedHeight(130)
         form_iv.addRow("面试提示词", self.interview_prompt)
 
         # ================= 页 4：通用 =================
@@ -775,42 +826,177 @@ class SettingsDialog(QDialog):
         lay.addWidget(btns)
         self.setStyleSheet(_dialog_style())
 
-    def _refresh_resume_label(self):
-        name = self.cfg.data.get("resume_name") or ""
-        text = self.cfg.data.get("resume_text") or ""
-        if name and text:
-            self.resume_label.setText(f"✅ 已加载：{name}（{len(text)} 字）")
-            self.resume_label.setStyleSheet("color:#7fd08a; font-size:11px;")
-        else:
-            self.resume_label.setText("未加载简历。支持 PDF / Word / TXT / Markdown。")
-            self.resume_label.setStyleSheet("color:#9aa3b2; font-size:11px;")
+    # ---- 资料库：原始资料 ----
 
-    def _pick_resume(self):
+    def _refresh_raw_label(self):
+        import profile_store as ps
+        names = ps.list_raw()
+        if names:
+            self.raw_label.setText(f"已上传 {len(names)} 个文件：" + "、".join(names))
+            self.raw_label.setStyleSheet("color:#7fd08a; font-size:11px;")
+        else:
+            self.raw_label.setText("尚未上传资料（简历、项目说明、个人总结等，可多选）。")
+            self.raw_label.setStyleSheet("color:#9aa3b2; font-size:11px;")
+
+    def _upload_raw(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择简历/资料文件（可多选）", "",
+            "资料文件 (*.pdf *.docx *.txt *.md)")
+        if not paths:
+            return
+        import docparse
+        import profile_store as ps
+        ok, fail = 0, []
+        for p in paths:
+            try:
+                docparse.extract_text(p)  # 先验证能解析出文字
+                ps.add_raw(p)
+                ok += 1
+            except Exception as e:  # noqa: BLE001
+                fail.append(f"{p}：{e}")
+        self._refresh_raw_label()
+        msg = f"✅ 已上传 {ok} 个文件"
+        if fail:
+            msg += "；失败 " + "；".join(f.split("：", 1)[-1] for f in fail)
+        self.test_result.setText(msg)
+
+    def _clear_raw(self):
+        import profile_store as ps
+        ps.clear_raw()
+        self._refresh_raw_label()
+        self.test_result.setText("已清空原始资料（不影响已生成的文稿）")
+
+    # ---- 资料库：固定文稿 ----
+
+    def _refresh_fixed_label(self):
+        n = len(self.fixed_editor.toPlainText().strip())
+        self.fixed_label.setText(
+            f"当前 {n} 字（注入上下文时上限 4000 字）" if n
+            else "固定文稿为空——开启面试模式前请先生成或填写")
+
+    def _gen_fixed(self):
+        import profile_store as ps
+        raw_texts = ps.read_raw_texts()
+        if not raw_texts:
+            self.test_result.setText("❌ 请先上传原始资料文件")
+            return
+        snap = self._snapshot()
+        self.test_result.setText("正在用 AI 整理固定文稿（约十几秒）…")
+        self._fixed_thread = FuncThread(
+            lambda: build_fixed_profile(snap, raw_texts), self)
+        self._fixed_thread.done.connect(self._on_fixed_done)
+        self._fixed_thread.start()
+
+    def _on_fixed_done(self, text, error):
+        if error:
+            self.test_result.setText("❌ 固定文稿生成失败：" + error)
+            return
+        self.fixed_editor.setPlainText(text.strip())
+        self.test_result.setText("✅ 固定文稿已生成，请检查修改后点「保存」")
+
+    def _import_fixed(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择简历/文档", "",
-            "简历文档 (*.pdf *.docx *.txt *.md)")
+            self, "导入固定文稿", "", "文稿文件 (*.md *.txt)")
         if not path:
             return
         import docparse
         try:
-            text = docparse.extract_text(path)
-        except docparse.DocParseError as e:
-            self.test_result.setText("❌ 简历解析失败：" + str(e))
-            return
-        import os
-        self.cfg.set("resume_name", os.path.basename(path))
-        self.cfg.set("resume_text", text)
-        self.cfg.save()  # 简历选择是导入动作，立即生效（不受「取消」影响）
-        self._refresh_resume_label()
-        self.test_result.setText(
-            f"✅ 简历已加载：{len(text)} 字，生成面试回答时将自动携带")
+            self.fixed_editor.setPlainText(docparse.extract_text(path))
+            self.test_result.setText("✅ 固定文稿已导入，可继续编辑")
+        except Exception as e:  # noqa: BLE001
+            self.test_result.setText("❌ 导入失败：" + str(e))
 
-    def _clear_resume(self):
-        self.cfg.set("resume_name", "")
-        self.cfg.set("resume_text", "")
-        self.cfg.save()
-        self._refresh_resume_label()
-        self.test_result.setText("已清空简历")
+    # ---- 资料库：灵活文稿 ----
+
+    def _refresh_flex_list(self):
+        import profile_store as ps
+        docs = ps.load_flex()
+        self.flex_list.clear()
+        for d in docs:
+            self.flex_list.addItem(
+                f"{d.get('title') or '未命名'}（{len(d.get('content') or '')} 字）")
+        total = sum(len(d.get("content") or "") for d in docs)
+        self.flex_label.setText(
+            f"共 {len(docs)} 篇 / {total} 字；面试时按问题自动检索，"
+            f"最多注入 2 篇全文" if docs else
+            "尚未生成。灵活文稿覆盖项目技术细节、问题与解决等追问点。")
+
+    def _gen_flex(self):
+        import profile_store as ps
+        fixed = self.fixed_editor.toPlainText().strip()
+        if not fixed:
+            self.test_result.setText("❌ 请先生成或填写固定文稿")
+            return
+        snap = self._snapshot()
+        raw_texts = ps.read_raw_texts()
+        self.test_result.setText("正在用 AI 生成灵活文稿（约十几秒）…")
+        self._flex_thread = FuncThread(
+            lambda: build_flexible_docs(snap, fixed, raw_texts), self)
+        self._flex_thread.done.connect(self._on_flex_done)
+        self._flex_thread.start()
+
+    def _on_flex_done(self, docs, error):
+        if error:
+            self.test_result.setText("❌ 灵活文稿生成失败：" + error)
+            return
+        import profile_store as ps
+        ps.save_flex(docs)
+        self._refresh_flex_list()
+        self.test_result.setText(f"✅ 已生成 {len(docs)} 篇灵活文稿，可逐篇编辑")
+
+    def _edit_flex(self):
+        row = self.flex_list.currentRow()
+        if row < 0:
+            self.test_result.setText("请先在列表中选中一篇")
+            return
+        import profile_store as ps
+        docs = ps.load_flex()
+        if row >= len(docs):
+            return
+        d = docs[row]
+        dlg = QDialog(self)
+        dlg.setWindowTitle("编辑灵活文稿")
+        lay = QFormLayout(dlg)
+        title_edit = QLineEdit(d.get("title") or "")
+        kw_edit = QLineEdit("、".join(d.get("keywords") or []))
+        kw_edit.setPlaceholderText("关键词，用顿号或逗号分隔")
+        content_edit = QPlainTextEdit(d.get("content") or "")
+        content_edit.setMinimumHeight(180)
+        lay.addRow("标题", title_edit)
+        lay.addRow("关键词", kw_edit)
+        lay.addRow("正文", content_edit)
+        btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Save).setText("保存")
+        btns.button(QDialogButtonBox.Cancel).setText("取消")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addRow(btns)
+        dlg.setStyleSheet(_dialog_style())
+        dlg.setMinimumWidth(480)
+        set_capture_immune(dlg, True)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        import re
+        d["title"] = title_edit.text().strip() or d.get("title")
+        d["keywords"] = [k for k in re.split(r"[、,，\s]+", kw_edit.text()) if k]
+        d["content"] = content_edit.toPlainText().strip()
+        docs[row] = d
+        ps.save_flex(docs)
+        self._refresh_flex_list()
+        self.test_result.setText("✅ 已保存修改")
+
+    def _del_flex(self):
+        row = self.flex_list.currentRow()
+        if row < 0:
+            self.test_result.setText("请先在列表中选中一篇")
+            return
+        import profile_store as ps
+        docs = ps.load_flex()
+        if row >= len(docs):
+            return
+        del docs[row]
+        ps.save_flex(docs)
+        self._refresh_flex_list()
 
     def _test_asr(self):
         snap = self._snapshot()
@@ -990,6 +1176,13 @@ class SettingsDialog(QDialog):
 
     def _save(self):
         self.cfg.data.update(self._snapshot())
+        # 旧版简历字段已由资料库接管，保存时迁移并清空
+        import profile_store as ps
+        fixed = self.fixed_editor.toPlainText().strip()
+        if fixed:
+            ps.save_fixed(fixed)
+        self.cfg.data["resume_text"] = ""
+        self.cfg.data["resume_name"] = ""
         self.cfg.save()
         self.accept()
 
@@ -1009,12 +1202,14 @@ class MainWindow(QWidget):
         self._auto_count = 0
         self._auto_pre_fp = None
         # 问答助手模式状态
-        self._cap_thread = None       # 音频采集线程
+        self._cap_thread = None       # 音频采集线程（扬声器/系统输出）
+        self._mic_thread = None       # 麦克风采集线程（面试模式下的本人回答）
         self._asr_thread = None       # 语音识别线程
         self._qa_thread = None        # 回答生成线程
         self._asr_busy = False        # ASR 请求进行中（期间新语音先攒着）
-        self._pending_wavs = []       # ASR 忙时积压的语音段
-        self._qa_pending_text = []    # 上次回答之后识别出的讲话文本
+        self._pending_wavs = []       # ASR 忙时积压的语音段 [(channel, wav)]
+        self._qa_pending_text = []    # 上次回答之后识别出的面试官讲话
+        self._convo = []              # 面试对话记录 ["面试官：…", "我：…"]
 
         # WindowDoesNotAcceptFocus + WA_ShowWithoutActivating：
         # 本窗口可正常点击/拖动，但永远不会从浏览器抢走键盘焦点，
@@ -1148,10 +1343,13 @@ class MainWindow(QWidget):
         self._hotkey_filter = WinHotkeyFilter()
         QApplication.instance().installNativeEventFilter(self._hotkey_filter)
         self._register_hotkey()
-        # 问答助手：采集线程 -> GUI 线程的桥接
+        # 问答助手：采集线程 -> GUI 线程的桥接（扬声器 / 麦克风两路）
         self._qa_bridge = QaBridge(self)
         self._qa_bridge.utterance.connect(self._on_utterance)
         self._qa_bridge.cap_error.connect(self._on_cap_error)
+        self._mic_bridge = QaBridge(self)
+        self._mic_bridge.utterance.connect(self._on_mic_utterance)
+        self._mic_bridge.cap_error.connect(self._on_mic_error)
         self._refresh_hint()
         self._apply_capture_immunity()
         self._reload_profile_bar()
@@ -1404,10 +1602,13 @@ class MainWindow(QWidget):
             self._sync_immersive_timer()
 
     def _toggle_interview(self, on: bool):
-        """面试辅助：复用问答监听，回答时携带简历上下文。"""
+        """面试辅助：双通道监听 + 资料库上下文 + 对话记录。"""
         if on:
-            if not (self.cfg.data.get("resume_text") or "").strip():
-                self.status.setText("请先在 ⚙设置 的「面试助手」分组中加载简历文件")
+            import profile_store as ps
+            has_profile = bool(ps.load_fixed()
+                               or (self.cfg.data.get("resume_text") or "").strip())
+            if not has_profile:
+                self.status.setText("请先在 ⚙设置 的「面试助手」分组中上传资料并生成固定文稿")
                 self.interview_btn.setChecked(False)
                 return
             if not self.qa_btn.isChecked():
@@ -1415,14 +1616,21 @@ class MainWindow(QWidget):
                 if not self.qa_btn.isChecked():  # 问答开启失败（如 ASR 未就绪）
                     self.interview_btn.setChecked(False)
                     return
+            self._convo = []  # 新一场面试，清空对话记录
             self.interview_btn.setText("💼 面试中")
-            name = self.cfg.data.get("resume_name") or "简历"
             self.answer.append(
-                f"<span style='color:#8a93a6'>💼 面试辅助已开启，"
-                f"回答将结合「{html.escape(name)}」生成。</span>")
-            self.status.setText("面试辅助：回答将结合简历生成")
+                "<span style='color:#8a93a6'>💼 面试辅助已开启：同时监听面试官（扬声器）"
+                "和你（麦克风），回答将结合资料库与对话上下文生成。</span>")
+            # 开启麦克风采集（默认开启；失败仅提示，不影响面试模式）
+            if self._mic_thread is None:
+                self._mic_thread = MicCapture(
+                    self._mic_bridge.utterance.emit,
+                    self._mic_bridge.cap_error.emit)
+                self._mic_thread.start()
+            self.status.setText("面试辅助：双通道监听中（面试官 + 我）")
             self._sync_immersive_timer()
         else:
+            self._stop_mic()
             self.interview_btn.setText("💼 面试")
             if self.qa_btn.isChecked():
                 self.status.setText("面试辅助已关闭（问答监听仍在运行）")
@@ -1486,40 +1694,79 @@ class MainWindow(QWidget):
         self._cap_thread = None
         if t is not None:
             t.stop()
+        self._stop_mic()
+
+    def _stop_mic(self):
+        t = self._mic_thread
+        self._mic_thread = None
+        if t is not None:
+            t.stop()
 
     def _on_cap_error(self, msg):
         self.status.setText(f"音频采集失败：{msg[:60]}")
         if self.qa_btn.isChecked():
             self.qa_btn.setChecked(False)
 
+    def _on_mic_error(self, msg):
+        # 麦克风采集失败只提示，不影响面试模式主流程（可能无麦克风设备）
+        self.status.setText(f"麦克风采集失败：{msg[:50]}（仅监听面试官）")
+        self._stop_mic()
+
     def _on_utterance(self, wav: bytes):
-        """采集线程切出一句完整语音（经 QaBridge 转入 GUI 线程）。"""
+        """扬声器通道（面试官）切出一句完整语音。"""
+        self._queue_asr(wav, "interviewer")
+
+    def _on_mic_utterance(self, wav: bytes):
+        """麦克风通道（本人回答）切出一句完整语音。"""
+        if not self.interview_btn.isChecked():
+            return  # 只在面试模式下跟踪自己的回答
+        self._queue_asr(wav, "me")
+
+    def _queue_asr(self, wav: bytes, channel: str):
         if not self.qa_btn.isChecked():
             return
         if self._asr_busy:
-            self._pending_wavs.append(wav)  # ASR 忙时先攒着，空闲后合并识别
+            self._pending_wavs.append((channel, wav))  # ASR 忙时先攒着
             return
-        self._start_asr(wav)
+        self._start_asr(wav, channel)
 
-    def _start_asr(self, wav: bytes):
+    def _start_asr(self, wav: bytes, channel: str = "interviewer"):
         self._asr_busy = True
         snap = dict(self.cfg.data)
         self._asr_thread = FuncThread(lambda: transcribe_audio(snap, wav), self)
-        self._asr_thread.done.connect(self._on_transcript)
+        self._asr_thread.done.connect(
+            lambda text, err: self._on_transcript(channel, text, err))
         self._asr_thread.start()
 
-    def _on_transcript(self, text, err):
+    def _on_transcript(self, channel: str, text, err):
         self._asr_busy = False
         if err:
             self.status.setText(f"语音识别失败：{err[:60]}")
         elif text:
-            self._qa_pending_text.append(text)
-            self.answer.append(
-                f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
+            if channel == "me":
+                self.answer.append(
+                    f"<span style='color:#9fd0a0'>我：{html.escape(text)}</span>")
+                if self.interview_btn.isChecked():
+                    self._convo.append(f"我：{text}")
+            else:
+                self._qa_pending_text.append(text)
+                self.answer.append(
+                    f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
+                if self.interview_btn.isChecked():
+                    self._convo.append(f"面试官：{text}")
+            self._trim_convo()
         if self._pending_wavs:
-            merged = merge_wavs(self._pending_wavs)
-            self._pending_wavs.clear()
-            self._start_asr(merged)
+            # 取队首通道的同通道语音段合并识别，避免面试官/我的声音混在一段
+            ch = self._pending_wavs[0][0]
+            group = [w for c, w in self._pending_wavs if c == ch]
+            self._pending_wavs = [(c, w) for c, w in self._pending_wavs
+                                  if c != ch]
+            self._start_asr(merge_wavs(group), ch)
+
+    def _trim_convo(self):
+        import profile_store as ps
+        while self._convo and sum(len(x) for x in self._convo) > ps.CONVO_MAX_CHARS:
+            self._convo.pop(0)
 
     def _qa_answer(self):
         """Ctrl+Alt+W 或按钮：把识别到的讲话内容发给 LLM 生成口语化回答。"""
@@ -1537,8 +1784,9 @@ class MainWindow(QWidget):
         self.answer.append(f"<b>❓ {html.escape(question[:120])}</b>")
         snap = dict(self.cfg.data)
         if self.interview_btn.isChecked():
-            self.status.setText("正在结合简历生成面试回答…")
-            fn = lambda: ask_interview(snap, question)  # noqa: E731
+            self.status.setText("正在结合资料库与对话上下文生成回答…")
+            convo = "\n".join(self._convo)
+            fn = lambda: ask_interview(snap, question, convo=convo)  # noqa: E731
         else:
             self.status.setText("正在生成回答…")
             fn = lambda: ask_text(snap, question)  # noqa: E731

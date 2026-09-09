@@ -4,7 +4,8 @@ import base64
 
 import requests
 
-from config import DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT
+from config import (DEFAULT_PROMPT, FLEX_BUILD_PROMPT, INTERVIEW_PROMPT,
+                    PROFILE_BUILD_PROMPT, QA_PROMPT)
 
 OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com"
@@ -174,24 +175,97 @@ def ask_text(cfg: dict, question: str) -> str:
     return _openai_chat(cfg, parts, thinking)
 
 
-def ask_interview(cfg: dict, question: str) -> str:
-    """面试辅助：简历上下文 + 面试官讲话 -> 口语化回答。
-    使用独立的 interview_prompt；简历文本来自 cfg['resume_text']。"""
-    resume = (cfg.get("resume_text") or "").strip()
-    if not resume:
-        raise LlmError("尚未加载简历，请在设置的「面试助手」分组中选择简历文件。")
-    if not cfg.get("api_key"):
-        raise LlmError("未配置 API Key，请先在设置中填写。")
-    if not cfg.get("model"):
-        raise LlmError("未配置模型名称，请先在设置中填写。")
-    prompt = cfg.get("interview_prompt") or INTERVIEW_PROMPT
-    content = (f"{prompt}\n\n【求职者简历】\n{resume}\n\n"
-               f"【面试中识别到的讲话】\n{question}")
+def _plain_chat(cfg: dict, content: str) -> str:
+    """纯文本单轮对话（不校验配置，调用方负责）。"""
     parts = [{"type": "text", "text": content}]
     thinking = bool(cfg.get("thinking", True))
     if cfg.get("provider") == "anthropic":
         return _anthropic_chat(cfg, parts, thinking)
     return _openai_chat(cfg, parts, thinking)
+
+
+def ask_interview(cfg: dict, question: str, convo: str = "") -> str:
+    """面试辅助：资料库上下文 + 对话记录 + 面试官讲话 -> 口语化回答。"""
+    if not cfg.get("api_key"):
+        raise LlmError("未配置 API Key，请先在设置中填写。")
+    if not cfg.get("model"):
+        raise LlmError("未配置模型名称，请先在设置中填写。")
+    return _plain_chat(cfg, build_interview_content(cfg, question, convo))
+
+
+def build_interview_content(cfg: dict, question: str, convo: str = "") -> str:
+    """组装面试问答上下文（纯函数，便于测试）：
+    面试提示词 + 固定文稿 + 灵活文稿索引 + 命中专题 + 对话记录 + 本轮问题。"""
+    import profile_store as ps
+    fixed = ps.load_fixed() or (cfg.get("resume_text") or "").strip()
+    if not fixed:
+        raise LlmError("资料库为空，请先在设置的「面试助手」分组中"
+                       "上传资料并生成固定文稿。")
+    prompt = cfg.get("interview_prompt") or INTERVIEW_PROMPT
+    parts = [prompt, "【固定文稿】\n" + fixed[:ps.FIXED_MAX_CHARS]]
+    docs = ps.load_flex()
+    if docs:
+        parts.append("【专题资料索引】\n" + ps.flex_index(docs))
+        for d in ps.retrieve(question, docs):
+            body = (d.get("content") or "")[:ps.FLEX_DOC_MAX_CHARS]
+            parts.append(f"【专题资料：{d.get('title') or '未命名'}】\n{body}")
+    if convo:
+        parts.append("【面试对话记录】\n" + convo[-ps.CONVO_MAX_CHARS:])
+    parts.append("【面试官最新讲话】\n" + question)
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------- 信息初始化
+
+def build_fixed_profile(cfg: dict, raw_texts: list) -> str:
+    """原始资料 [(文件名, 文本)] -> LLM 整理归纳的固定文稿。"""
+    if not cfg.get("api_key"):
+        raise LlmError("未配置 API Key，请先在设置中填写。")
+    if not cfg.get("model"):
+        raise LlmError("未配置模型名称，请先在设置中填写。")
+    if not raw_texts:
+        raise LlmError("请先上传简历/个人资料文件。")
+    blob = "\n\n".join(f"【{name}】\n{text}" for name, text in raw_texts)
+    return _plain_chat(cfg, PROFILE_BUILD_PROMPT + "\n\n" + blob[:24000])
+
+
+def build_flexible_docs(cfg: dict, fixed_text: str, raw_texts: list) -> list:
+    """固定文稿 + 原始资料 -> 3~8 篇灵活文稿（JSON 解析 + 校验）。"""
+    if not cfg.get("api_key"):
+        raise LlmError("未配置 API Key，请先在设置中填写。")
+    if not cfg.get("model"):
+        raise LlmError("未配置模型名称，请先在设置中填写。")
+    if not (fixed_text or "").strip():
+        raise LlmError("请先生成或填写固定文稿。")
+    blob = "\n\n".join(f"【{name}】\n{text}" for name, text in raw_texts)
+    content = (FLEX_BUILD_PROMPT + "\n\n【固定文稿】\n" + fixed_text[:8000]
+               + ("\n\n【原始资料】\n" + blob[:12000] if blob else ""))
+    out = _plain_chat(cfg, content)
+    docs = _parse_docs_json(out)
+    if not docs:
+        raise LlmError("未能从模型回复中解析出灵活文稿，请重试。原始回复："
+                       + out[:200])
+    for i, d in enumerate(docs):
+        d["id"] = i + 1
+        d.setdefault("title", f"专题 {i + 1}")
+        d.setdefault("keywords", [])
+    return docs
+
+
+def _parse_docs_json(text: str) -> list:
+    """从模型输出中提取 JSON 数组并做基本校验。"""
+    import json
+    import re
+    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start:end + 1])
+    except Exception:
+        return []
+    return [d for d in data
+            if isinstance(d, dict) and (d.get("content") or "").strip()]
 
 
 # ---------------------------------------------------------------- 语音识别（ASR）

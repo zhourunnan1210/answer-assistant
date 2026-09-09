@@ -40,9 +40,10 @@ def test_tone_wav(duration: float = 0.8, freq: float = 440.0) -> bytes:
     return pcm_to_wav(pcm)
 
 
-class LoopbackCapture(threading.Thread):
-    """后台线程：采集系统输出音频，每检测出一句完整语音就回调
-    on_utterance(wav_bytes)；异常回调 on_error(msg)。"""
+class _VadCapture(threading.Thread):
+    """后台采集线程基类：静音断句，每切出一句完整语音就回调
+    on_utterance(wav_bytes)；异常回调 on_error(msg)。
+    子类实现 _open() 返回 (设备, 声道数)。"""
 
     def __init__(self, on_utterance, on_error=None):
         super().__init__(daemon=True)
@@ -53,6 +54,9 @@ class LoopbackCapture(threading.Thread):
     def stop(self):
         self._stop_event.set()
 
+    def _open(self):
+        raise NotImplementedError
+
     def run(self):
         try:
             self._loop()
@@ -61,16 +65,14 @@ class LoopbackCapture(threading.Thread):
                 self.on_error(str(exc))
 
     def _loop(self):
-        import soundcard as sc
-        speaker = sc.default_speaker()
-        mic = sc.get_microphone(speaker.name, include_loopback=True)
+        device, channels = self._open()
         block = int(CAPTURE_RATE * BLOCK_MS / 1000)
         speech = []      # 当前语音段的音频块
         silence_t = 0.0  # 已连续静音时长（秒）
-        with mic.recorder(samplerate=CAPTURE_RATE, channels=2,
-                          blocksize=block) as rec:
+        with device.recorder(samplerate=CAPTURE_RATE, channels=channels,
+                             blocksize=block) as rec:
             while not self._stop_event.is_set():
-                data = rec.record(numframes=block)  # float32 (n, 2)
+                data = rec.record(numframes=block)  # float32 (n, ch)
                 mono = data.mean(axis=1)
                 rms = float(np.sqrt(np.mean(mono ** 2)) + 1e-12)
                 if rms >= SILENCE_RMS:
@@ -100,3 +102,21 @@ class LoopbackCapture(threading.Thread):
         res = np.interp(idx, np.arange(len(mono_f32)), mono_f32)
         pcm = (np.clip(res, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
         self.on_utterance(pcm_to_wav(pcm))
+
+
+class LoopbackCapture(_VadCapture):
+    """采集系统输出（扬声器/耳机里播放的声音，如会议中对方的讲话）。"""
+
+    def _open(self):
+        import soundcard as sc
+        speaker = sc.default_speaker()
+        mic = sc.get_microphone(speaker.name, include_loopback=True)
+        return mic, 2
+
+
+class MicCapture(_VadCapture):
+    """采集麦克风（面试场景中候选人自己的回答），用于对话上下文跟踪。"""
+
+    def _open(self):
+        import soundcard as sc
+        return sc.default_microphone(), 1

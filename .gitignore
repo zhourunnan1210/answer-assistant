@@ -21,6 +21,9 @@ build_diag/
 # 本地语音模型（228MB，随安装包分发，不入库）
 models/
 
+# 个人资料库（简历等隐私数据，绝不提交）
+profile/
+
 # 安装包产物
 installer/
 
