@@ -281,9 +281,10 @@ assert "QPS 提升 40%" in content, "命中的专题应注入全文"
 assert "面试官：介绍下推荐系统项目" in content
 assert "【面试官最新讲话】" in content
 # 超长截断
-ps.save_fixed("长" * 6000)
+ps.save_fixed("长" * (ps.FIXED_MAX_CHARS + 2000))
 _c2 = llm.build_interview_content({"api_key": "k", "model": "m"}, "无关问题 xyz")
 assert "长" * ps.FIXED_MAX_CHARS in _c2
+assert "长" * (ps.FIXED_MAX_CHARS + 1) not in _c2  # 超出上限部分被截断
 assert "长" * (ps.FIXED_MAX_CHARS + 1) not in _c2, "固定文稿应按上限截断"
 # 旧版简历字段回退兼容
 ps.save_fixed("")
