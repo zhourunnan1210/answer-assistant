@@ -154,3 +154,44 @@ def retrieve(question: str, docs: list, max_hits: int = FLEX_MAX_HITS) -> list:
         scored.append((score, d))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [d for s, d in scored[:max_hits] if s > 0]
+
+
+# ---------------------------------------------------------------- 面试场次记录与复盘
+
+REVIEW_MAX_CHARS = 1500    # 注入上下文的复盘要点上限
+SESSION_MAX_CHARS = 12000  # 生成复盘时读取的场次记录上限
+
+
+def sessions_dir() -> str:
+    return os.path.join(base_dir(), "sessions")
+
+
+def review_path() -> str:
+    return os.path.join(base_dir(), "interview_review.md")
+
+
+def save_session(lines: list) -> str:
+    """把一场面试的记录（面试官/我/助手建议，按时间序）写成 md 文件，
+    返回文件路径。文件名带时间戳，多场并存。"""
+    import datetime
+    os.makedirs(sessions_dir(), exist_ok=True)
+    name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".md"
+    path = os.path.join(sessions_dir(), name)
+    body = "\n\n".join(l.strip() for l in lines if l and l.strip())
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"# 面试记录 {datetime.datetime.now():%Y-%m-%d %H:%M}\n\n{body}\n")
+    return path
+
+
+def load_review() -> str:
+    try:
+        with open(review_path(), "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def save_review(text: str):
+    os.makedirs(base_dir(), exist_ok=True)
+    with open(review_path(), "w", encoding="utf-8") as f:
+        f.write(text.strip())

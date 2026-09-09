@@ -393,6 +393,44 @@ assert win.answer.toPlainText().count("正在说话") == 2  # 新一轮讲话再
 win.answer.clear()
 win._qa_pending_text = []
 print("✓ 上下文去重/资料库稳定目录就位")
+
+# 17. 隐身诊断/兼容模式 + 持续优化（场次保存/复盘注入）
+import profile_store as ps17
+assert hasattr(app_main, "get_display_affinity")
+assert hasattr(dlg, "stealth_compat") and hasattr(dlg, "session_autosave")
+assert hasattr(dlg, "iv_inject_review")
+snap17 = dlg._snapshot()
+for k in ("stealth_compat", "session_autosave", "inject_review"):
+    assert k in snap17, k
+assert win._stealth_compat is False  # 默认关闭，新系统用半透明样式
+# 场次记录保存/读取
+win._session_log = ["面试官：介绍项目", "我：我负责召回", "助手建议：可以这样说…"]
+win.cfg.data["session_autosave"] = True
+win.cfg.data["api_key"] = ""  # 无 key 时只保存记录，不触发复盘线程
+win._save_session()
+assert win._session_log == []  # 保存后清空，防止退出时重复保存
+import glob as _glob
+_sess = _glob.glob(os.path.join(os.environ["PROFILE_DIR"], "sessions", "*.md"))
+assert len(_sess) == 1 and "面试官：介绍项目" in open(
+    _sess[0], encoding="utf-8").read()
+# 开关关闭时不保存
+win.cfg.data["session_autosave"] = False
+win._session_log = ["面试官：另一条"]
+win._save_session()
+assert len(_glob.glob(os.path.join(
+    os.environ["PROFILE_DIR"], "sessions", "*.md"))) == 1
+win.cfg.data["session_autosave"] = True
+# 复盘注入上下文
+ps17.save_fixed("固定文稿：推荐系统项目经历")
+ps17.save_review("## 本场问题清单\n- 推荐系统召回")
+c3 = llm.build_interview_content(
+    {"api_key": "k", "model": "m", "inject_review": True}, "召回怎么做的")
+assert "【面试复盘要点】" in c3 and "推荐系统召回" in c3
+c4 = llm.build_interview_content(
+    {"api_key": "k", "model": "m", "inject_review": False}, "召回怎么做的")
+assert "【面试复盘要点】" not in c4
+assert llm.REVIEW_PROMPT and hasattr(dlg, "_open_review_editor")
+print("✓ 隐身诊断/兼容模式 + 持续优化（场次保存/复盘注入）就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """答题助手 —— 半透明置顶悬浮窗，截取屏幕题目区域，调用多模态大模型给出答案。"""
 import sys
+import os
 import html
 import json
 import ctypes
@@ -26,7 +27,7 @@ from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT
 from audio_capture import LoopbackCapture, MicCapture, merge_wavs
 from llm import (AUTO_PROMPT, ask_interview, ask_text, ask_vision,
                  build_fixed_profile, build_flexible_docs, fetch_models,
-                 test_asr, test_connection, transcribe_audio)
+                 generate_review, test_asr, test_connection, transcribe_audio)
 
 def combo_arrow_path() -> str:
     """运行时绘制下拉箭头小图标（深色背景下默认箭头几乎不可见），返回正斜杠路径。"""
@@ -360,18 +361,38 @@ def set_capture_immune(win, on: bool = True) -> str:
     返回 "exclude"（完全隐身）/ "monitor"（黑块回退）/ "off" / None（失败）。"""
     try:
         hwnd = int(win.winId())
-        u = ctypes.windll.user32
+        # use_last_error=True 才能用 ctypes.get_last_error() 取到真实错误码
+        u = ctypes.WinDLL("user32", use_last_error=True)
         if not on:
             return "off" if u.SetWindowDisplayAffinity(hwnd, 0) else None
         if u.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE):
             return "exclude"
+        err1 = ctypes.get_last_error()
         # 旧版系统（Win7 ~ Win10 1909）不支持完全隐身，回退为黑块模式：
         # 内容不会泄露，但共享方能看出有一个黑色窗口
         if u.SetWindowDisplayAffinity(hwnd, WDA_MONITOR):
+            print(f"[stealth] exclude 失败(err={err1})，已回退黑块模式 hwnd={hwnd:#x}")
             return "monitor"
+        err2 = ctypes.get_last_error()
+        # err=8(ERROR_NOT_ENOUGH_MEMORY) 在 Win10 2004 + 分层透明窗口上常见
+        print(f"[stealth] 隐身设置失败 hwnd={hwnd:#x} "
+              f"exclude_err={err1} monitor_err={err2}")
         return None
     except Exception:
         return None
+
+
+def get_display_affinity(win):
+    """读回窗口当前的 display affinity（设置后验证用）。失败返回 None。"""
+    try:
+        hwnd = int(win.winId())
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        val = ctypes.c_ulong(0)
+        if u.GetWindowDisplayAffinity(hwnd, ctypes.byref(val)):
+            return val.value
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------- 区域框选
@@ -839,6 +860,26 @@ class SettingsDialog(QDialog):
         self.iv_auto.setChecked(bool(cfg.data.get("interview_auto_answer", True)))
         form_iv.addRow("自动作答", self.iv_auto)
 
+        self.iv_inject_review = QCheckBox("把面试复盘要点注入回答上下文")
+        self.iv_inject_review.setToolTip(
+            "开启后，每次生成回答时会附带资料库中的面试复盘要点\n"
+            "（interview_review.md，上限 1500 字），让模型知道\n"
+            "哪些问题被问过、之前答得怎么样。复盘由「持续优化」功能生成。")
+        self.iv_inject_review.setChecked(bool(cfg.data.get("inject_review", True)))
+        form_iv.addRow("复盘注入", self.iv_inject_review)
+
+        review_btns = QHBoxLayout()
+        edit_review_btn = QPushButton("✏ 编辑复盘")
+        prev_review_btn = QPushButton("👁 预览复盘")
+        edit_review_btn.setToolTip("查看/修改最近一次面试复盘（持续优化功能自动生成）")
+        prev_review_btn.setToolTip("以渲染后的排版查看复盘要点")
+        edit_review_btn.clicked.connect(lambda: self._open_review_editor("edit"))
+        prev_review_btn.clicked.connect(lambda: self._open_review_editor("preview"))
+        review_btns.addWidget(edit_review_btn)
+        review_btns.addWidget(prev_review_btn)
+        review_btns.addStretch()
+        form_iv.addRow("④ 面试复盘", review_btns)
+
         # ================= 页 4：通用 =================
         page_gen = QWidget()
         form_gen = QFormLayout(page_gen)
@@ -904,6 +945,23 @@ class SettingsDialog(QDialog):
             "（鼠标在窗口内其他按钮上时不会隐藏，放心点击）")
         self.immersive.setChecked(bool(cfg.data.get("immersive_mode", False)))
         form_gen.addRow("沉浸式", self.immersive)
+
+        self.stealth_compat = QCheckBox("Windows 10 2004 兼容隐身（需重启生效）")
+        self.stealth_compat.setToolTip(
+            "Win10 2004 等旧系统上，半透明分层窗口会导致隐身失效\n"
+            "（共享画面中窗口可见或出现黑块）。开启后主窗口禁用\n"
+            "半透明背景与整体透明度，改用普通不透明窗口。\n"
+            "Win10 21H2 / Win11 无需开启。")
+        self.stealth_compat.setChecked(bool(cfg.data.get("stealth_compat", False)))
+        form_gen.addRow("兼容隐身", self.stealth_compat)
+
+        self.session_autosave = QCheckBox("资料库持续优化：面试结束后自动保存并复盘本场记录")
+        self.session_autosave.setToolTip(
+            "面试模式关闭或程序退出时，自动把本场对话记录保存到\n"
+            "资料库 sessions/ 目录，并调用 LLM 生成面试复盘\n"
+            "（新问题归类 + 回答点评 + 资料补充建议）。")
+        self.session_autosave.setChecked(bool(cfg.data.get("session_autosave", True)))
+        form_gen.addRow("持续优化", self.session_autosave)
 
         # ================= 侧栏 + 卡片页 =================
         self.pages = QStackedWidget()
@@ -983,6 +1041,7 @@ class SettingsDialog(QDialog):
     # ---- 资料库：固定文稿 ----
 
     def _refresh_fixed_label(self):
+        import profile_store as ps
         text = self.fixed_editor.toPlainText().strip()
         n = len(text)
         if not n:
@@ -990,7 +1049,7 @@ class SettingsDialog(QDialog):
             return
         summary = " ".join(text.split())[:60]
         self.fixed_label.setText(
-            f"当前 {n} 字（注入上下文时上限 4000 字）：{summary}…")
+            f"当前 {n} 字（注入上下文时上限 {ps.FIXED_MAX_CHARS} 字）：{summary}…")
 
     def _open_fixed_editor(self, mode: str):
         dlg = MarkdownEditorDialog(
@@ -999,6 +1058,15 @@ class SettingsDialog(QDialog):
         if dlg.exec() == QDialog.Accepted:
             self.fixed_editor.setPlainText(dlg.text())
             self.test_result.setText("✅ 固定文稿已更新，记得点「保存」")
+
+    def _open_review_editor(self, mode: str):
+        import profile_store as ps
+        dlg = MarkdownEditorDialog(
+            ps.load_review(), self,
+            title="面试复盘要点（interview_review.md）", start_mode=mode)
+        if dlg.exec() == QDialog.Accepted:
+            ps.save_review(dlg.text())
+            self.test_result.setText("✅ 面试复盘已更新")
 
     def _gen_fixed(self):
         import profile_store as ps
@@ -1217,6 +1285,9 @@ class SettingsDialog(QDialog):
             "ui_bg_opacity": self.ui_bg.value() / 100,
             "answer_bg_opacity": self.answer_bg.value() / 100,
             "immersive_mode": self.immersive.isChecked(),
+            "stealth_compat": self.stealth_compat.isChecked(),
+            "session_autosave": self.session_autosave.isChecked(),
+            "inject_review": self.iv_inject_review.isChecked(),
             "qa_prompt": self.qa_prompt.toPlainText().strip() or QA_PROMPT,
             "interview_prompt": (self.interview_prompt.toPlainText().strip()
                                  or INTERVIEW_PROMPT),
@@ -1323,12 +1394,18 @@ class MainWindow(QWidget):
         self._qa_pending_text = []    # 上次回答之后识别出的面试官讲话
         self._convo = []              # 面试对话记录 ["面试官：…", "我：…"]
         self._me_speaking_shown = False  # 答案区是否已显示「我：( 正在说话 )」指示
+        self._session_log = []        # 本场面试完整记录（面试官/我/助手建议）
+        self._review_thread = None    # 复盘生成线程
 
         # WindowDoesNotAcceptFocus + WA_ShowWithoutActivating：
         # 本窗口可正常点击/拖动，但永远不会从浏览器抢走键盘焦点，
         # 避免网课页面监听 blur/visibilitychange 误判"切出"。
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # Win10 2004 兼容隐身：分层透明窗口会导致 SetWindowDisplayAffinity
+        # 失效（共享画面可见/黑块），兼容模式下使用普通不透明窗口
+        self._stealth_compat = bool(self.cfg.data.get("stealth_compat", False))
+        if not self._stealth_compat:
+            self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setWindowTitle("答题助手")
         self.setMinimumSize(280, 320)
@@ -1338,7 +1415,8 @@ class MainWindow(QWidget):
         else:
             self.resize(400, 480)
         self._apply_topmost()
-        self.setWindowOpacity(self.cfg.window_opacity)
+        if not self._stealth_compat:
+            self.setWindowOpacity(self.cfg.window_opacity)
 
         panel = QWidget(objectName="panel")
         root = QVBoxLayout(self)
@@ -1533,6 +1611,9 @@ class MainWindow(QWidget):
         u.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)      # HWND_TOPMOST 提到最前
         if not self.cfg.always_on_top:
             u.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)  # 再落回普通层级的顶部
+        # 托盘隐藏/恢复后 HWND 或 DWM 表面状态可能变化，隐身属性会丢失（黑块），
+        # 等 Qt 处理完本次事件循环后重新设置
+        QTimer.singleShot(0, self._apply_capture_immunity)
 
     def changeEvent(self, e):
         # 被 Win+D / 显示桌面等系统方式最小化时改为收进托盘，
@@ -1571,6 +1652,14 @@ class MainWindow(QWidget):
             self.status.setText("共享隐身：系统版本较旧，共享时本窗口显示为黑块")
         elif mode is None:
             self.status.setText("隐身模式设置失败（需 Windows 10 2004 及以上）")
+        elif mode == "exclude":
+            # 读回验证：设置成功不代表当前 HWND 上生效（窗口可能被 Qt 重建过）
+            back = get_display_affinity(self)
+            if back is not None and back != WDA_EXCLUDEFROMCAPTURE:
+                set_capture_immune(self, True)  # 重试一次
+                back = get_display_affinity(self)
+                if back != WDA_EXCLUDEFROMCAPTURE:
+                    self.status.setText("隐身属性未生效，如在共享中请重启程序")
 
     def _toggle_topmost(self):
         self.cfg.set("always_on_top", self.top_btn.isChecked())
@@ -1738,6 +1827,7 @@ class MainWindow(QWidget):
                     self.interview_btn.setChecked(False)
                     return
             self._convo = []  # 新一场面试，清空对话记录
+            self._session_log = []  # 新一场面试，清空场次记录
             self.interview_btn.setText("💼 面试中")
             self._ans_append(
                 "<span style='color:#8a93a6'>💼 面试辅助已开启：同时监听面试官（扬声器）"
@@ -1753,6 +1843,7 @@ class MainWindow(QWidget):
         else:
             self._auto_answer_timer.stop()
             self._stop_mic()
+            self._save_session()  # 持续优化：保存本场记录并生成复盘
             self.interview_btn.setText("💼 面试")
             if self.qa_btn.isChecked():
                 self.status.setText("面试辅助已关闭（问答监听仍在运行）")
@@ -1880,6 +1971,7 @@ class MainWindow(QWidget):
                     self._me_speaking_shown = True
                 if self.interview_btn.isChecked():
                     self._convo.append(f"我：{text}")
+                    self._session_log.append(f"我：{text}")
             else:
                 self._me_speaking_shown = False  # 面试官插话，重置指示
                 self._qa_pending_text.append(text)
@@ -1887,6 +1979,7 @@ class MainWindow(QWidget):
                     f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
                 if self.interview_btn.isChecked():
                     self._convo.append(f"面试官：{text}")
+                    self._session_log.append(f"面试官：{text}")
                     self._auto_answer_kick()  # 重置 2 秒静默计时
             self._trim_convo()
         if self._pending_wavs:
@@ -1913,6 +2006,40 @@ class MainWindow(QWidget):
                     lines.pop(i)
                     break
         return "\n".join(lines)
+
+    # ---- 资料库持续优化（场次记录 + 自动复盘）----
+
+    def _save_session(self):
+        """面试结束/退出时：保存本场记录到资料库 sessions/，并后台生成复盘。"""
+        log, self._session_log = self._session_log, []
+        if not log or not self.cfg.data.get("session_autosave", True):
+            return
+        import profile_store as ps
+        try:
+            path = ps.save_session(log)
+            self.status.setText(f"本场面试记录已保存：{os.path.basename(path)}")
+        except OSError as e:
+            self.status.setText(f"面试记录保存失败：{e}")
+            return
+        if not self.cfg.data.get("api_key"):
+            return  # 未配置模型则只保存记录，跳过复盘
+        session_text = "\n".join(log)
+        snap = dict(self.cfg.data)
+        self._review_thread = FuncThread(
+            lambda: generate_review(snap, session_text), self)
+        self._review_thread.done.connect(self._on_review_done)
+        self._review_thread.start()
+
+    def _on_review_done(self, text, err):
+        if err:
+            self.status.setText(f"复盘生成失败：{err[:50]}（场次记录已保存）")
+            return
+        import profile_store as ps
+        try:
+            ps.save_review(text)
+            self.status.setText("面试复盘已生成并写入资料库 ✅")
+        except OSError as e:
+            self.status.setText(f"复盘保存失败：{e}")
 
     # ---- 面试自动作答（2 秒静默触发）----
 
@@ -1974,6 +2101,8 @@ class MainWindow(QWidget):
             body = html.escape(text).replace("\n", "<br>")
             self._ans_append(
                 f"<span style='color:#f2f4f8'>💬 {body}</span><br>")
+            if self.interview_btn.isChecked():
+                self._session_log.append(f"助手建议：{text}")
         # 生成期间面试官又讲了新内容 → 重新计时，静默 2 秒后自动跟进
         if self._qa_pending_text:
             self._auto_answer_kick()
@@ -2046,6 +2175,7 @@ class MainWindow(QWidget):
 
     def _quit_app(self):
         self._stop_capture()
+        self._save_session()  # 持续优化：退出前保存本场面试记录并生成复盘
         self._save_win_size()
         self.cfg.save()
         for hid in self.ALL_HOTKEY_IDS:
@@ -2067,7 +2197,8 @@ class MainWindow(QWidget):
         dlg = SettingsDialog(self.cfg, self)
         set_capture_immune(dlg, True)  # 设置对话框（含API Key）同样隐身
         if dlg.exec() == QDialog.Accepted:
-            self.setWindowOpacity(self.cfg.window_opacity)
+            if not self._stealth_compat:
+                self.setWindowOpacity(self.cfg.window_opacity)
             self._register_hotkey()
             self._refresh_hint()
             self._apply_answer_style()

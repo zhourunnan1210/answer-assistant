@@ -5,7 +5,7 @@ import base64
 import requests
 
 from config import (DEFAULT_PROMPT, FLEX_BUILD_PROMPT, INTERVIEW_PROMPT,
-                    PROFILE_BUILD_PROMPT, QA_PROMPT)
+                    PROFILE_BUILD_PROMPT, QA_PROMPT, REVIEW_PROMPT)
 
 OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com"
@@ -211,8 +211,24 @@ def build_interview_content(cfg: dict, question: str, convo: str = "") -> str:
             parts.append(f"【专题资料：{d.get('title') or '未命名'}】\n{body}")
     if convo:
         parts.append("【面试对话记录】\n" + convo[-ps.CONVO_MAX_CHARS:])
+    if cfg.get("inject_review", True):
+        review = ps.load_review()
+        if review:
+            parts.append("【面试复盘要点】\n" + review[:ps.REVIEW_MAX_CHARS])
     parts.append("【面试官最新讲话】\n" + question)
     return "\n\n".join(parts)
+
+
+def generate_review(cfg: dict, session_text: str) -> str:
+    """面试场次记录 -> LLM 复盘要点（Markdown）。"""
+    if not cfg.get("api_key"):
+        raise LlmError("未配置 API Key，请先在设置中填写。")
+    if not cfg.get("model"):
+        raise LlmError("未配置模型名称，请先在设置中填写。")
+    import profile_store as ps
+    content = (REVIEW_PROMPT + "\n\n【面试记录】\n"
+               + session_text[:ps.SESSION_MAX_CHARS])
+    return _plain_chat(cfg, content)
 
 
 # ---------------------------------------------------------------- 信息初始化

@@ -73,6 +73,19 @@ FLEX_BUILD_PROMPT = (
     "3. 各篇主题互不重复。"
 )
 
+REVIEW_PROMPT = (
+    "你是一位面试复盘助手。下面给出一场面试的完整记录"
+    "（面试官提问、候选人口述回答、AI 助手当时给出的建议）。\n"
+    "请输出一份「面试复盘要点」Markdown 文稿，结构如下：\n"
+    "## 本场问题清单（按主题归类，列出面试官实际问过的问题）\n"
+    "## 回答质量点评（哪些回答到位、哪些含糊或遗漏要点）\n"
+    "## 资料补充建议（哪些问题现有资料不足以支撑，建议补充什么素材）\n"
+    "要求：\n"
+    "1. 只基于记录内容总结，不要编造；\n"
+    "2. 语言精炼，总长度 1200 字以内；\n"
+    "3. 「资料补充建议」要具体可操作，方便后续直接补充进资料库。"
+)
+
 DEFAULTS = {
     "provider": "openai",                # openai | anthropic
     "base_url": "https://api.openai.com/v1",
@@ -88,6 +101,9 @@ DEFAULTS = {
     "font_size": 14,                     # 答案区字号（px）
     "win_size": None,                    # 记住窗口大小 [w, h]
     "immersive_mode": False,             # 沉浸式：问答/面试时鼠标离开窗口自动只留答案区
+    "stealth_compat": False,             # Win10 2004 兼容隐身：禁用半透明分层样式（需重启）
+    "session_autosave": True,            # 持续优化：面试结束后自动保存场次记录并生成复盘
+    "inject_review": True,               # 面试上下文注入复盘要点（interview_review.md）
     "ui_bg_opacity": 0.80,               # UI 区域（标题栏/按钮区底板）背景不透明度 0~1
     "answer_bg_opacity": 0.05,           # 答案区背景不透明度 0~1（白色叠加层）
     "profiles": {},                      # 我的预设：{名称: {provider, base_url, api_key, model, thinking}}
@@ -100,7 +116,7 @@ DEFAULTS = {
     "asr_model": "FunAudioLLM/SenseVoiceSmall",
     # ---- 面试辅助（简历上下文 + 面试提示词）----
     "interview_prompt": INTERVIEW_PROMPT,  # 面试专用提示词
-    "interview_auto_answer": True,         # 面试模式：面试官静默 3 秒自动作答
+    "interview_auto_answer": True,         # 面试模式：面试官静默 2 秒自动作答
     "resume_name": "",                     # 已加载简历的文件名（仅用于显示）
     "resume_text": "",                     # 简历解析后的纯文本
 }
