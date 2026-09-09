@@ -326,13 +326,13 @@ assert "新标题" in ed.preview.toPlainText()
 assert hasattr(dlg, "_open_fixed_editor")
 print("✓ Markdown 编辑器就位（编辑/预览/分屏/meta）")
 
-# 15. 面试自动作答（2 秒静默触发）
+# 15. 面试自动作答（静默触发）
 import config as _cfg_mod
 assert _cfg_mod.DEFAULTS.get("interview_auto_answer") is True
 assert hasattr(dlg, "iv_auto") and dlg.iv_auto.isChecked()
 snap15 = dlg._snapshot()
 assert "interview_auto_answer" in snap15
-assert win._auto_answer_timer.interval() == 2000
+assert win._auto_answer_timer.interval() == 3000
 assert win._auto_answer_timer.isSingleShot()
 # pending 为空时不动作（阻断信号，避免 toggled 触发完整开关流程）
 win._auto_answer_timer.stop()
@@ -360,7 +360,7 @@ assert not win._auto_answer_timer.isActive()
 win._auto_answer_timer.start()
 win._toggle_qa(False)
 assert not win._auto_answer_timer.isActive()
-print("✓ 面试自动作答就位（2 秒静默触发/开关/模式关闭停止计时）")
+print("✓ 面试自动作答就位（静默触发/开关/模式关闭停止计时）")
 
 # 16. 上下文去重 + 资料库目录稳定性
 win._ans_append("滚动测试内容")
@@ -431,6 +431,68 @@ c4 = llm.build_interview_content(
 assert "【面试复盘要点】" not in c4
 assert llm.REVIEW_PROMPT and hasattr(dlg, "_open_review_editor")
 print("✓ 隐身诊断/兼容模式 + 持续优化（场次保存/复盘注入）就位")
+
+# 18. 防噪机制 + 复盘归档 + 一键优化资料库
+# 噪声门槛：杂音/语气词被过滤，真实短问题保留
+assert app_main.is_noise_utterance("The.")
+assert app_main.is_noise_utterance("嗯")
+assert app_main.is_noise_utterance("呃，啊")
+assert not app_main.is_noise_utterance("为什么")
+assert not app_main.is_noise_utterance("然后呢")
+assert not app_main.is_noise_utterance("介绍一下你自己")
+# 截断识别：无标点/逗号/悬置词结尾 → 没说完
+assert app_main.looks_incomplete("请问你为什么投递这个岗位")
+assert app_main.looks_incomplete("你当时负责了项目的，")
+assert app_main.looks_incomplete("我主要负责的是")
+assert not app_main.looks_incomplete("你为这次面试做了哪些准备？")
+assert not app_main.looks_incomplete("好的，我明白了。")
+# 动态阈值：完整句 3 秒，截断痕迹 4 秒
+win.interview_btn.blockSignals(True)
+win.interview_btn.setChecked(True)
+win.cfg.data["interview_auto_answer"] = True
+win._qa_pending_text = ["你为这次面试做了哪些准备？"]
+win._auto_answer_kick()
+assert win._auto_answer_timer.interval() == 3000
+win._auto_answer_timer.stop()
+win._qa_pending_text = ["你为这次面试做了哪些"]
+win._auto_answer_kick()
+assert win._auto_answer_timer.interval() == 4000
+win._auto_answer_timer.stop()
+win.interview_btn.setChecked(False)
+win.interview_btn.blockSignals(False)
+# 回声判定：高度相似判回声，真实内容不误删
+assert app_main.texts_similar(
+    "我们来聊聊你参与的海南高企服务咨询平台项目",
+    "我们来聊聊你参与的海南高企服务咨询平台。")
+assert not app_main.texts_similar("嗯", "嗯")  # 太短不判定
+assert not app_main.texts_similar(
+    "我先说一下我的看法", "我们来聊聊高企平台项目")
+# 复盘归档：reviews/ 时间戳 + interview_review.md 最新指针
+_reviews_dir = os.path.join(os.environ["PROFILE_DIR"], "reviews")
+_before = len(_glob.glob(os.path.join(_reviews_dir, "*.md")))
+ps17.save_review("复盘一")
+ps17.save_review("复盘二")
+assert ps17.load_review() == "复盘二"
+assert len(_glob.glob(os.path.join(_reviews_dir, "*.md"))) == _before + 2
+# merge_flex：同标题覆盖、新主题追加、找不到的 update 转追加
+_merged = ps17.merge_flex(
+    [{"id": "1", "title": "推荐系统", "keywords": ["召回"], "content": "旧内容"}],
+    [{"title": "推荐系统", "content": "新内容"},
+     {"title": "不存在的", "content": "转追加"}],
+    [{"title": "新主题", "keywords": ["x"], "content": "新增内容"}])
+assert len(_merged) == 3
+assert _merged[0]["content"] == "新内容" and _merged[0]["keywords"] == ["召回"]
+# prompt_improvements 注入面试提示词（用户级）
+c5 = llm.build_interview_content(
+    {"api_key": "k", "model": "m", "prompt_improvements": "回答按 STAR 结构"},
+    "召回怎么做的")
+assert "【复盘改进要点】" in c5 and "STAR" in c5
+assert hasattr(llm, "apply_review") and hasattr(dlg, "_apply_review")
+# 上一个完整问题提取（听不清重试用）
+win._convo = ["面试官：你为什么投递这个岗位？", "我：因为我……",
+              "面试官：The"]
+assert win._last_complete_question() == "你为什么投递这个岗位？"
+print("✓ 防噪/复盘归档/一键优化资料库就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

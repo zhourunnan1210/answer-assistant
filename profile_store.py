@@ -192,6 +192,43 @@ def load_review() -> str:
 
 
 def save_review(text: str):
-    os.makedirs(base_dir(), exist_ok=True)
+    """保存复盘：reviews/ 按时间戳归档历史，interview_review.md 永远是最新一场。"""
+    import datetime
+    os.makedirs(reviews_dir(), exist_ok=True)
     with open(review_path(), "w", encoding="utf-8") as f:
         f.write(text.strip())
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(reviews_dir(), stamp + ".md")
+    i = 1
+    while os.path.exists(path):  # 同一秒保存多次时加序号
+        path = os.path.join(reviews_dir(), f"{stamp}_{i}.md")
+        i += 1
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.strip())
+
+
+def reviews_dir() -> str:
+    return os.path.join(base_dir(), "reviews")
+
+
+def merge_flex(docs: list, updates: list, additions: list) -> list:
+    """按标题合并复盘优化结果：同标题覆盖更新，新主题追加。
+    updates 里找不到同标题的自动转为追加，宁多勿丢。"""
+    docs = [dict(d) for d in docs]
+    by_title = {d.get("title"): d for d in docs}
+    for u in updates:
+        t = u.get("title")
+        if t in by_title:
+            by_title[t].update(
+                {k: v for k, v in u.items() if k in ("keywords", "content") and v})
+        else:
+            additions.append(u)
+    import time as _t
+    for a in additions:
+        d = {"id": f"review-{int(_t.time()*1000)}",
+             "title": a.get("title") or "未命名",
+             "keywords": a.get("keywords") or [],
+             "content": a.get("content") or ""}
+        docs.append(d)
+        by_title[d["title"]] = d
+    return docs

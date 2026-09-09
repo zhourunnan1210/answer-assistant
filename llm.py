@@ -5,7 +5,8 @@ import base64
 import requests
 
 from config import (DEFAULT_PROMPT, FLEX_BUILD_PROMPT, INTERVIEW_PROMPT,
-                    PROFILE_BUILD_PROMPT, QA_PROMPT, REVIEW_PROMPT)
+                    PROFILE_BUILD_PROMPT, QA_PROMPT, REVIEW_APPLY_PROMPT,
+                    REVIEW_PROMPT)
 
 OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com"
@@ -202,6 +203,9 @@ def build_interview_content(cfg: dict, question: str, convo: str = "") -> str:
         raise LlmError("资料库为空，请先在设置的「面试助手」分组中"
                        "上传资料并生成固定文稿。")
     prompt = cfg.get("interview_prompt") or INTERVIEW_PROMPT
+    improvements = (cfg.get("prompt_improvements") or "").strip()
+    if improvements:
+        prompt += "\n\n【复盘改进要点】\n" + improvements
     parts = [prompt, "【固定文稿】\n" + fixed[:ps.FIXED_MAX_CHARS]]
     docs = ps.load_flex()
     if docs:
@@ -229,6 +233,48 @@ def generate_review(cfg: dict, session_text: str) -> str:
     content = (REVIEW_PROMPT + "\n\n【面试记录】\n"
                + session_text[:ps.SESSION_MAX_CHARS])
     return _plain_chat(cfg, content)
+
+
+def apply_review(cfg: dict) -> dict:
+    """一键优化资料库：复盘 + 固定文稿 + 灵活文稿索引 ->
+    {"flex_updates": [...], "flex_additions": [...], "prompt_suggestion": str}"""
+    if not cfg.get("api_key"):
+        raise LlmError("未配置 API Key，请先在设置中填写。")
+    if not cfg.get("model"):
+        raise LlmError("未配置模型名称，请先在设置中填写。")
+    import profile_store as ps
+    review = ps.load_review()
+    if not review:
+        raise LlmError("还没有面试复盘。先完成一场面试（或手动编辑复盘）。")
+    fixed = ps.load_fixed() or (cfg.get("resume_text") or "")
+    docs = ps.load_flex()
+    content = (REVIEW_APPLY_PROMPT + "\n\n【面试复盘】\n" + review[:6000]
+               + "\n\n【固定文稿】\n" + fixed[:4000]
+               + "\n\n【灵活文稿索引】\n" + (ps.flex_index(docs) or "（空）"))
+    out = _plain_chat(cfg, content)
+    result = _parse_docs_json_object(out)
+    for key in ("flex_updates", "flex_additions"):
+        result.setdefault(key, [])
+        result[key] = [d for d in result[key]
+                       if isinstance(d, dict) and d.get("content")]
+    result.setdefault("prompt_suggestion", "")
+    return result
+
+
+def _parse_docs_json_object(out: str) -> dict:
+    """从模型回复中解析 JSON 对象（容忍代码块/前后杂质）。"""
+    import json as _json
+    import re as _re
+    m = _re.search(r"\{.*\}", out, _re.S)
+    if not m:
+        raise LlmError("未能从模型回复中解析出结果，请重试。原始回复：" + out[:200])
+    try:
+        obj = _json.loads(m.group(0))
+    except ValueError:
+        raise LlmError("模型回复的 JSON 格式有误，请重试。原始回复：" + out[:200])
+    if not isinstance(obj, dict):
+        raise LlmError("模型回复格式有误，请重试。")
+    return obj
 
 
 # ---------------------------------------------------------------- 信息初始化

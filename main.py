@@ -2,8 +2,11 @@
 """答题助手 —— 半透明置顶悬浮窗，截取屏幕题目区域，调用多模态大模型给出答案。"""
 import sys
 import os
+import re
+import time
 import html
 import json
+import shutil
 import ctypes
 from ctypes import wintypes
 from datetime import datetime
@@ -26,8 +29,9 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT
 from audio_capture import LoopbackCapture, MicCapture, merge_wavs
 from llm import (AUTO_PROMPT, ask_interview, ask_text, ask_vision,
-                 build_fixed_profile, build_flexible_docs, fetch_models,
-                 generate_review, test_asr, test_connection, transcribe_audio)
+                 apply_review, build_fixed_profile, build_flexible_docs,
+                 fetch_models, generate_review, test_asr, test_connection,
+                 transcribe_audio)
 
 def combo_arrow_path() -> str:
     """运行时绘制下拉箭头小图标（深色背景下默认箭头几乎不可见），返回正斜杠路径。"""
@@ -393,6 +397,56 @@ def get_display_affinity(win):
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------- 语音防噪
+
+_PUNCT_RE = re.compile(r"[\s\.,!?~·、。，！？…：:；;\"'“”‘’（）()\-—]+")
+_FILLER_RE = re.compile(r"(嗯+|啊+|呃+|额+|哦+|唉+|哈+|嘿+|哼+|啧+|唔+|哎+)")
+_CJK_RE = re.compile(r"[一-鿿]")
+# 悬置词结尾 → 大概率是半句话（ASR 截断或讲话中顿）
+_DANGLING = ("的", "了", "和", "与", "是", "就", "都", "也", "在", "有", "把",
+             "被", "让", "对", "为", "到", "给", "从", "向", "及", "或", "因",
+             "所", "但", "然", "如", "像", "比", "按", "照", "根", "据")
+
+
+def _normalize_text(text: str) -> str:
+    """归一化：去标点/语气词/空白，小写，用于相似度与长度判定。"""
+    t = _FILLER_RE.sub("", text or "")
+    t = _PUNCT_RE.sub("", t)
+    return t.lower()
+
+
+def is_noise_utterance(text: str) -> bool:
+    """判定语音转写是否为无意义碎片（杂音/语气词），不提交、不记录。
+    规则：纯英文碎片需 ≥6 字符才有效；含中文时需 ≥3 个汉字。
+    「为什么」（3 字）这类短问题会保留，「The.」「嗯」会被过滤。"""
+    t = _normalize_text(text)
+    if not t:
+        return True
+    cjk = len(_CJK_RE.findall(t))
+    if cjk > 0:
+        return cjk < 3
+    return len(t) < 6
+
+
+def looks_incomplete(text: str) -> bool:
+    """判断一句话是否"像没说完"：句末没有完整标点（。？！… 等）即视为
+    可能在讲话中顿或被 ASR 截断，用于把自动作答静默阈值从 3 秒放宽到 4 秒。
+    有完整句末标点的直接视为说完了（截断残留的偶发句号容忍误判）。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return t[-1] not in "。？！…?!”\""
+
+
+def texts_similar(a: str, b: str, threshold: float = 0.85) -> bool:
+    """归一化后相似度判定（回声去重用）。短文本（<6 字符）不判定，防误删。"""
+    na, nb = _normalize_text(a), _normalize_text(b)
+    if len(na) < 6 or len(nb) < 6:
+        return False
+    import difflib
+    return difflib.SequenceMatcher(None, na, nb).ratio() >= threshold
 
 
 # ---------------------------------------------------------------- 区域框选
@@ -853,10 +907,12 @@ class SettingsDialog(QDialog):
         self.interview_prompt.setFixedHeight(130)
         form_iv.addRow("面试提示词", self.interview_prompt)
 
-        self.iv_auto = QCheckBox("自动作答：面试官停止讲话 2 秒后自动生成回答（推荐开启）")
+        self.iv_auto = QCheckBox("自动作答：面试官停止讲话 3 秒后自动生成回答（推荐开启）")
         self.iv_auto.setToolTip(
             "开启后无需按 Ctrl+Alt+W：每次识别到面试官讲话都会重置计时，\n"
-            "静默满 2 秒即自动把问题发给模型；手动按钮/快捷键依然可用。")
+            "静默满 3 秒即自动把问题发给模型；若最后一句像没说完\n"
+            "（无句末标点/悬置词结尾），自动放宽到 4 秒；\n"
+            "手动按钮/快捷键依然可用。")
         self.iv_auto.setChecked(bool(cfg.data.get("interview_auto_answer", True)))
         form_iv.addRow("自动作答", self.iv_auto)
 
@@ -871,12 +927,18 @@ class SettingsDialog(QDialog):
         review_btns = QHBoxLayout()
         edit_review_btn = QPushButton("✏ 编辑复盘")
         prev_review_btn = QPushButton("👁 预览复盘")
+        apply_review_btn = QPushButton("✨ 一键优化资料库")
         edit_review_btn.setToolTip("查看/修改最近一次面试复盘（持续优化功能自动生成）")
         prev_review_btn.setToolTip("以渲染后的排版查看复盘要点")
+        apply_review_btn.setToolTip(
+            "根据最近复盘的「资料补充建议」：自动更新/新增灵活文稿，\n"
+            "并给出宏观回答结构建议（预览确认后才生效，生效前自动备份）")
         edit_review_btn.clicked.connect(lambda: self._open_review_editor("edit"))
         prev_review_btn.clicked.connect(lambda: self._open_review_editor("preview"))
+        apply_review_btn.clicked.connect(self._apply_review)
         review_btns.addWidget(edit_review_btn)
         review_btns.addWidget(prev_review_btn)
+        review_btns.addWidget(apply_review_btn)
         review_btns.addStretch()
         form_iv.addRow("④ 面试复盘", review_btns)
 
@@ -1067,6 +1129,78 @@ class SettingsDialog(QDialog):
         if dlg.exec() == QDialog.Accepted:
             ps.save_review(dlg.text())
             self.test_result.setText("✅ 面试复盘已更新")
+
+    def _apply_review(self):
+        """一键优化资料库：按复盘建议更新/新增灵活文稿 + 宏观提示词建议。"""
+        snap = self._snapshot()
+        self.test_result.setText("正在根据复盘优化资料库（约十几秒）…")
+        self._apply_thread = FuncThread(lambda: apply_review(snap), self)
+        self._apply_thread.done.connect(self._on_apply_done)
+        self._apply_thread.start()
+
+    def _on_apply_done(self, result, error):
+        if error:
+            self.test_result.setText("❌ 优化失败：" + str(error))
+            return
+        ups = result.get("flex_updates") or []
+        adds = result.get("flex_additions") or []
+        sug = (result.get("prompt_suggestion") or "").strip()
+        if not ups and not adds and not sug:
+            self.test_result.setText("✅ 复盘没有需要落地的建议，资料库保持现状")
+            return
+        # 预览确认对话框：列出增改清单 + 提示词建议
+        dlg = QDialog(self)
+        dlg.setWindowTitle("确认资料库优化")
+        lay = QVBoxLayout(dlg)
+        summary = QPlainTextEdit(dlg)
+        summary.setReadOnly(True)
+        lines = []
+        if ups:
+            lines.append("【将更新以下灵活文稿】\n"
+                         + "\n".join("· " + (d.get("title") or "未命名") for d in ups))
+        if adds:
+            lines.append("【将新增以下灵活文稿】\n"
+                         + "\n".join("· " + (d.get("title") or "未命名") for d in adds))
+        if sug:
+            lines.append("【提示词宏观改进建议】\n" + sug)
+        summary.setPlainText("\n\n".join(lines))
+        summary.setMinimumSize(440, 260)
+        lay.addWidget(summary)
+        prompt_chk = QCheckBox("同时采纳提示词改进建议（用户级，不随预设切换）",
+                               dlg)
+        prompt_chk.setChecked(bool(sug))
+        prompt_chk.setEnabled(bool(sug))
+        lay.addWidget(prompt_chk)
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("确认应用", dlg)
+        cancel_btn = QPushButton("取消", dlg)
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        lay.addLayout(btn_row)
+        if dlg.exec() != QDialog.Accepted:
+            self.test_result.setText("已取消，资料库未改动")
+            return
+        import profile_store as ps
+        if ups or adds:
+            try:
+                if os.path.exists(ps.flex_path()):
+                    shutil.copy2(ps.flex_path(), ps.flex_path() + ".bak")
+                merged = ps.merge_flex(ps.load_flex(), ups, adds)
+                ps.save_flex(merged)
+                self._refresh_flex_list()
+            except OSError as e:
+                self.test_result.setText("❌ 文稿保存失败：" + str(e))
+                return
+        if sug and prompt_chk.isChecked():
+            self.cfg.data["prompt_improvements"] = sug
+            self.cfg.save()  # 用户级配置立即持久化，不依赖设置页的保存按钮
+        self.test_result.setText(
+            f"✅ 资料库已更新（改 {len(ups)} 篇、增 {len(adds)} 篇"
+            + ("，已采纳提示词建议" if sug and prompt_chk.isChecked() else "")
+            + "），原灵活文稿已备份为 .bak")
 
     def _gen_fixed(self):
         import profile_store as ps
@@ -1395,6 +1529,9 @@ class MainWindow(QWidget):
         self._convo = []              # 面试对话记录 ["面试官：…", "我：…"]
         self._me_speaking_shown = False  # 答案区是否已显示「我：( 正在说话 )」指示
         self._session_log = []        # 本场面试完整记录（面试官/我/助手建议）
+        self._session_filtered = []   # 被判定为回声/噪音而过滤的内容（审计用）
+        self._recent_iv = []          # [(时刻, 文本)] 面试官近期讲话，回声判定用
+        self._unclear_retried = False  # 「听不清」回答已自动重试过一次
         self._review_thread = None    # 复盘生成线程
 
         # WindowDoesNotAcceptFocus + WA_ShowWithoutActivating：
@@ -1521,10 +1658,11 @@ class MainWindow(QWidget):
         self._immersive_hidden = False
         self._immersive_geo = None   # 隐藏前的窗口几何，用于恢复
 
-        # 面试自动作答：面试官每次讲话后重置计时，静默满 2 秒视为问题结束并触发
+        # 面试自动作答：面试官每次讲话后重置计时；默认静默 3 秒触发，
+        # 最后一句有截断痕迹时放宽到 4 秒
         self._auto_answer_timer = QTimer(self)
         self._auto_answer_timer.setSingleShot(True)
-        self._auto_answer_timer.setInterval(2000)
+        self._auto_answer_timer.setInterval(3000)
         self._auto_answer_timer.timeout.connect(self._auto_answer_tick)
 
         self._apply_panel_style()
@@ -1828,6 +1966,8 @@ class MainWindow(QWidget):
                     return
             self._convo = []  # 新一场面试，清空对话记录
             self._session_log = []  # 新一场面试，清空场次记录
+            self._session_filtered = []
+            self._recent_iv = []
             self.interview_btn.setText("💼 面试中")
             self._ans_append(
                 "<span style='color:#8a93a6'>💼 面试辅助已开启：同时监听面试官（扬声器）"
@@ -1970,17 +2110,27 @@ class MainWindow(QWidget):
                         "<span style='color:#9fd0a0'>我：( 正在说话 )</span>")
                     self._me_speaking_shown = True
                 if self.interview_btn.isChecked():
-                    self._convo.append(f"我：{text}")
-                    self._session_log.append(f"我：{text}")
+                    if self._looks_like_echo(text):
+                        # 扬声器外放导致的回声：不入上下文，留审计记录
+                        self._session_filtered.append(f"我(回声已滤)：{text}")
+                    elif not is_noise_utterance(text):
+                        self._convo.append(f"我：{text}")
+                        self._session_log.append(f"我：{text}")
             else:
                 self._me_speaking_shown = False  # 面试官插话，重置指示
-                self._qa_pending_text.append(text)
-                self._ans_append(
-                    f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
-                if self.interview_btn.isChecked():
-                    self._convo.append(f"面试官：{text}")
-                    self._session_log.append(f"面试官：{text}")
-                    self._auto_answer_kick()  # 重置 2 秒静默计时
+                if is_noise_utterance(text):
+                    # 杂音/语气碎片：不显示、不进 pending、不触发自动作答
+                    pass
+                else:
+                    self._qa_pending_text.append(text)
+                    self._ans_append(
+                        f"<span style='color:#8a93a6'>听到：{html.escape(text)}</span>")
+                    self._recent_iv.append((time.monotonic(), text))
+                    self._recent_iv = self._recent_iv[-10:]
+                    if self.interview_btn.isChecked():
+                        self._convo.append(f"面试官：{text}")
+                        self._session_log.append(f"面试官：{text}")
+                        self._auto_answer_kick()  # 重置静默计时
             self._trim_convo()
         if self._pending_wavs:
             # 取队首通道的同通道语音段合并识别，避免面试官/我的声音混在一段
@@ -1989,6 +2139,14 @@ class MainWindow(QWidget):
             self._pending_wavs = [(c, w) for c, w in self._pending_wavs
                                   if c != ch]
             self._start_asr(merge_wavs(group), ch)
+
+    def _looks_like_echo(self, text: str) -> bool:
+        """谨慎版回声判定：mic 内容与最近 5 秒内面试官讲话高度相似（≥85%）
+        且长度 ≥6 字符才判为回声——宁可漏判，不可误删。"""
+        now = time.monotonic()
+        recent = [(t, s) for t, s in self._recent_iv if now - t < 5]
+        self._recent_iv = recent
+        return any(texts_similar(text, s) for _, s in recent)
 
     def _trim_convo(self):
         import profile_store as ps
@@ -2012,8 +2170,12 @@ class MainWindow(QWidget):
     def _save_session(self):
         """面试结束/退出时：保存本场记录到资料库 sessions/，并后台生成复盘。"""
         log, self._session_log = self._session_log, []
+        filtered, self._session_filtered = self._session_filtered, []
         if not log or not self.cfg.data.get("session_autosave", True):
             return
+        if filtered:
+            log = log + ["", "<!-- filtered（判定为回声/噪音，未入上下文，仅审计留存） -->",
+                         *filtered]
         import profile_store as ps
         try:
             path = ps.save_session(log)
@@ -2041,21 +2203,25 @@ class MainWindow(QWidget):
         except OSError as e:
             self.status.setText(f"复盘保存失败：{e}")
 
-    # ---- 面试自动作答（2 秒静默触发）----
+    # ---- 面试自动作答（静默触发：3 秒，截断痕迹 4 秒）----
 
     def _auto_answer_kick(self):
-        """面试官每说一句就重置计时；静默满 2 秒由 _auto_answer_tick 触发。"""
+        """面试官每说一句就重置计时；静默满阈值由 _auto_answer_tick 触发。"""
         if (self.interview_btn.isChecked()
                 and self.cfg.data.get("interview_auto_answer", True)):
+            last = self._qa_pending_text[-1] if self._qa_pending_text else ""
+            # 最后一句像没说完（无句末标点/悬置词结尾）→ 放宽到 4 秒
+            self._auto_answer_timer.setInterval(
+                4000 if looks_incomplete(last) else 3000)
             self._auto_answer_timer.start()
 
     def _auto_answer_tick(self):
         if not self.interview_btn.isChecked() or not self._qa_pending_text:
             return
         if self._qa_thread is not None and self._qa_thread.isRunning():
-            self._auto_answer_timer.start()  # 上一个回答还在生成，2 秒后再试
+            self._auto_answer_timer.start()  # 上一个回答还在生成，稍后再试
             return
-        self.status.setText("检测到 2 秒静默，自动作答…")
+        self.status.setText("检测到静默，自动作答…")
         self._qa_answer()
 
     def _qa_answer(self):
@@ -2076,6 +2242,7 @@ class MainWindow(QWidget):
         pending = list(self._qa_pending_text)
         question = "\n".join(pending)
         self._qa_pending_text = []
+        self._unclear_retried = False  # 新一轮问题允许一次「听不清」自动重试
         self.answer.clear()  # 只显示当前问题 + 回答
         self._me_speaking_shown = False
         self._ans_append(f"<b>❓ {html.escape(question[:120])}</b>")
@@ -2097,15 +2264,43 @@ class MainWindow(QWidget):
             self._ans_append(
                 f"<span style='color:#e07878'>回答失败：{html.escape(err)}</span>")
         else:
+            # 「听不清请重问」类回复多半是噪音误触发：自动用上一个完整问题重试一次
+            if (self.interview_btn.isChecked() and not self._unclear_retried
+                    and re.search(r"没听清|听不清|无法听清|请重复|再重复|重复一遍", text)):
+                prev = self._last_complete_question()
+                if prev:
+                    self._unclear_retried = True
+                    self.status.setText("识别到噪音干扰，改用上一个完整问题重试…")
+                    self._ans_append(
+                        "<span style='color:#8a93a6'>（刚才的问题疑似噪音，"
+                        "已改用上一个完整问题重新生成）</span>")
+                    snap = dict(self.cfg.data)
+                    convo = "\n".join(self._convo)
+                    self._qa_thread = FuncThread(
+                        lambda: ask_interview(snap, prev, convo=convo), self)
+                    self._qa_thread.done.connect(self._on_qa_answered)
+                    self._qa_thread.start()
+                    return
             self.status.setText("回答已生成 ✅")
             body = html.escape(text).replace("\n", "<br>")
             self._ans_append(
                 f"<span style='color:#f2f4f8'>💬 {body}</span><br>")
             if self.interview_btn.isChecked():
                 self._session_log.append(f"助手建议：{text}")
-        # 生成期间面试官又讲了新内容 → 重新计时，静默 2 秒后自动跟进
+        # 生成期间面试官又讲了新内容 → 重新计时，静默后自动跟进
         if self._qa_pending_text:
             self._auto_answer_kick()
+
+    def _last_complete_question(self):
+        """对话记录里最近一条"完整"的面试官讲话（≥8 个有效字符、
+        无截断痕迹），用于噪音误触发后的自动重试。"""
+        for line in reversed(self._convo):
+            if not line.startswith("面试官："):
+                continue
+            t = line[len("面试官："):]
+            if len(_normalize_text(t)) >= 8 and not looks_incomplete(t):
+                return t
+        return None
 
     # ---- 预设快捷切换 ----
 
