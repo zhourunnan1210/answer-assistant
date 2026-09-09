@@ -11,14 +11,15 @@ from PySide6.QtCore import (Qt, QAbstractNativeEventFilter, QBuffer, QEvent,
                             QIODevice, QObject, QPoint, QRect, QThread,
                             QTimer, Signal)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtGui import (QColor, QCursor, QGuiApplication, QIcon, QImage,
-                           QPainter, QPen, QPixmap)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
-                               QDialogButtonBox, QFileDialog, QFormLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QMenu, QMessageBox, QInputDialog, QPlainTextEdit,
-                               QPushButton, QRadioButton, QSizeGrip, QSlider,
-                               QSpinBox, QStackedWidget, QSystemTrayIcon,
+from PySide6.QtGui import (QColor, QCursor, QFont, QGuiApplication, QIcon,
+                           QImage, QPainter, QPen, QPixmap)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
+                               QDialog, QDialogButtonBox, QFileDialog,
+                               QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QMenu, QMessageBox, QInputDialog,
+                               QPlainTextEdit, QPushButton, QRadioButton,
+                               QSizeGrip, QSlider, QSpinBox, QSplitter,
+                               QStackedWidget, QSystemTrayIcon, QTextBrowser,
                                QTextEdit, QVBoxLayout, QWidget)
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT
@@ -452,6 +453,107 @@ class QaBridge(QObject):
     cap_error = Signal(str)     # 采集异常
 
 
+class MarkdownEditorDialog(QDialog):
+    """类 Typora 的 Markdown 文稿编辑窗口：编辑 / 预览 / 分屏三种视图。
+
+    show_meta=True 时顶部带「标题」「关键词」输入（用于灵活文稿）。
+    用 text() 取编辑后的 Markdown；meta_values() 取 (标题, [关键词])。"""
+
+    def __init__(self, text: str = "", parent=None, title: str = "文稿编辑",
+                 show_meta: bool = False, meta=("", ""), start_mode: str = "edit"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(680, 540)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+
+        if show_meta:
+            m = QFormLayout()
+            self.title_edit = QLineEdit(meta[0])
+            self.kw_edit = QLineEdit(meta[1])
+            self.kw_edit.setPlaceholderText("关键词，用顿号或逗号分隔（用于提问时检索命中）")
+            m.addRow("标题", self.title_edit)
+            m.addRow("关键词", self.kw_edit)
+            lay.addLayout(m)
+
+        # 视图切换 + 字数
+        bar = QHBoxLayout()
+        self.mode_btns = {}
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for key, label in (("edit", "✏ 编辑"), ("preview", "👁 预览"),
+                           ("split", "◫ 分屏")):
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.clicked.connect(lambda _c, k=key: self._set_mode(k))
+            group.addButton(b)
+            bar.addWidget(b)
+            self.mode_btns[key] = b
+        bar.addStretch()
+        self.count_label = QLabel("")
+        self.count_label.setStyleSheet("color:#9aa3b2; font-size:11px;")
+        bar.addWidget(self.count_label)
+        lay.addLayout(bar)
+
+        # 编辑区 + 预览区（分屏时并排）
+        self.editor = QPlainTextEdit(text)
+        f = QFont("Consolas")
+        f.setStyleHint(QFont.Monospace)
+        f.setPointSize(10)
+        self.editor.setFont(f)
+        self.editor.setPlaceholderText("在这里用 Markdown 编辑文稿…")
+        self.preview = QTextBrowser()
+        self.preview.setOpenExternalLinks(False)
+        self.splitter = QSplitter()
+        self.splitter.addWidget(self.editor)
+        self.splitter.addWidget(self.preview)
+        self.splitter.setSizes([340, 340])
+        lay.addWidget(self.splitter, stretch=1)
+
+        # 编辑 -> 预览 的防抖实时渲染（300ms）
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(300)
+        self._render_timer.timeout.connect(self._render_preview)
+        self.editor.textChanged.connect(self._on_text_changed)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Save).setText("保存")
+        btns.button(QDialogButtonBox.Cancel).setText("取消")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+        self.setStyleSheet(_dialog_style())
+        set_capture_immune(self, True)  # 文稿可能含隐私，同样对共享隐身
+        self._set_mode(start_mode)
+        self._render_preview()
+
+    def _on_text_changed(self):
+        n = len(self.editor.toPlainText().strip())
+        self.count_label.setText(f"{n} 字")
+        self._render_timer.start()
+
+    def _render_preview(self):
+        self.preview.setMarkdown(self.editor.toPlainText())
+
+    def _set_mode(self, mode: str):
+        self.mode_btns[mode].setChecked(True)
+        self.editor.setVisible(mode in ("edit", "split"))
+        self.preview.setVisible(mode in ("preview", "split"))
+        if mode in ("preview", "split"):
+            self._render_preview()
+
+    def text(self) -> str:
+        return self.editor.toPlainText().strip()
+
+    def meta_values(self):
+        import re
+        kws = [k for k in re.split(r"[、,，\s]+", self.kw_edit.text()) if k]
+        return self.title_edit.text().strip(), kws
+
+
 # ---------------------------------------------------------------- 设置对话框
 
 # 常用供应商预设：名称, provider, base_url
@@ -675,22 +777,27 @@ class SettingsDialog(QDialog):
         fixed_btns = QHBoxLayout()
         gen_fixed_btn = QPushButton("AI 生成/重新生成")
         gen_fixed_btn.setToolTip("用当前预设的模型，把原始资料整理成固定文稿；"
-                                 "生成后可继续在下方手动修改")
+                                 "生成后可点「编辑」继续修改")
         gen_fixed_btn.clicked.connect(self._gen_fixed)
         imp_fixed_btn = QPushButton("从文件导入…")
         imp_fixed_btn.clicked.connect(self._import_fixed)
-        fixed_btns.addWidget(gen_fixed_btn)
-        fixed_btns.addWidget(imp_fixed_btn)
+        edit_fixed_btn = QPushButton("✏ 编辑")
+        edit_fixed_btn.setToolTip("在 Markdown 编辑器中修改固定文稿")
+        edit_fixed_btn.clicked.connect(lambda: self._open_fixed_editor("edit"))
+        prev_fixed_btn = QPushButton("👁 预览")
+        prev_fixed_btn.setToolTip("以渲染后的排版查看固定文稿")
+        prev_fixed_btn.clicked.connect(lambda: self._open_fixed_editor("preview"))
+        for b in (gen_fixed_btn, imp_fixed_btn, edit_fixed_btn, prev_fixed_btn):
+            fixed_btns.addWidget(b)
         fixed_btns.addStretch()
         form_iv.addRow("② 固定文稿", fixed_btns)
         import profile_store as _ps
+        # 隐藏缓冲区：正文不直接嵌在设置页，统一在 Markdown 编辑器中查看/修改
         self.fixed_editor = QPlainTextEdit(
-            _ps.load_fixed() or (cfg.data.get("resume_text") or ""))
-        self.fixed_editor.setPlaceholderText(
-            "个人介绍 + 过往项目介绍。可点「AI 生成」，也可直接粘贴/手动编辑。")
-        self.fixed_editor.setFixedHeight(120)
-        form_iv.addRow("", self.fixed_editor)
+            _ps.load_fixed() or (cfg.data.get("resume_text") or ""), page_iv)
+        self.fixed_editor.setVisible(False)
         self.fixed_label = QLabel()
+        self.fixed_label.setWordWrap(True)
         self.fixed_label.setStyleSheet("color:#9aa3b2; font-size:11px;")
         form_iv.addRow("", self.fixed_label)
         self.fixed_editor.textChanged.connect(self._refresh_fixed_label)
@@ -869,10 +976,22 @@ class SettingsDialog(QDialog):
     # ---- 资料库：固定文稿 ----
 
     def _refresh_fixed_label(self):
-        n = len(self.fixed_editor.toPlainText().strip())
+        text = self.fixed_editor.toPlainText().strip()
+        n = len(text)
+        if not n:
+            self.fixed_label.setText("固定文稿为空——开启面试模式前请先生成或填写")
+            return
+        summary = " ".join(text.split())[:60]
         self.fixed_label.setText(
-            f"当前 {n} 字（注入上下文时上限 4000 字）" if n
-            else "固定文稿为空——开启面试模式前请先生成或填写")
+            f"当前 {n} 字（注入上下文时上限 4000 字）：{summary}…")
+
+    def _open_fixed_editor(self, mode: str):
+        dlg = MarkdownEditorDialog(
+            self.fixed_editor.toPlainText(), self,
+            title="固定文稿（个人介绍 + 过往项目介绍）", start_mode=mode)
+        if dlg.exec() == QDialog.Accepted:
+            self.fixed_editor.setPlainText(dlg.text())
+            self.test_result.setText("✅ 固定文稿已更新，记得点「保存」")
 
     def _gen_fixed(self):
         import profile_store as ps
@@ -954,32 +1073,17 @@ class SettingsDialog(QDialog):
         if row >= len(docs):
             return
         d = docs[row]
-        dlg = QDialog(self)
-        dlg.setWindowTitle("编辑灵活文稿")
-        lay = QFormLayout(dlg)
-        title_edit = QLineEdit(d.get("title") or "")
-        kw_edit = QLineEdit("、".join(d.get("keywords") or []))
-        kw_edit.setPlaceholderText("关键词，用顿号或逗号分隔")
-        content_edit = QPlainTextEdit(d.get("content") or "")
-        content_edit.setMinimumHeight(180)
-        lay.addRow("标题", title_edit)
-        lay.addRow("关键词", kw_edit)
-        lay.addRow("正文", content_edit)
-        btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        btns.button(QDialogButtonBox.Save).setText("保存")
-        btns.button(QDialogButtonBox.Cancel).setText("取消")
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        lay.addRow(btns)
-        dlg.setStyleSheet(_dialog_style())
-        dlg.setMinimumWidth(480)
-        set_capture_immune(dlg, True)
+        dlg = MarkdownEditorDialog(
+            d.get("content") or "", self, title="编辑灵活文稿",
+            show_meta=True,
+            meta=(d.get("title") or "", "、".join(d.get("keywords") or [])),
+            start_mode="split")
         if dlg.exec() != QDialog.Accepted:
             return
-        import re
-        d["title"] = title_edit.text().strip() or d.get("title")
-        d["keywords"] = [k for k in re.split(r"[、,，\s]+", kw_edit.text()) if k]
-        d["content"] = content_edit.toPlainText().strip()
+        title, kws = dlg.meta_values()
+        d["title"] = title or d.get("title")
+        d["keywords"] = kws
+        d["content"] = dlg.text()
         docs[row] = d
         ps.save_flex(docs)
         self._refresh_flex_list()

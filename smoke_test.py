@@ -305,6 +305,25 @@ win._convo = ["x" * 2000] * 3
 win._trim_convo()
 assert sum(len(x) for x in win._convo) <= ps.CONVO_MAX_CHARS
 print("✓ 资料库/检索/上下文组装/双通道就位")
+
+# 14. Markdown 编辑器窗口：视图切换、meta、渲染
+ed = app_main.MarkdownEditorDialog("**粗体** 内容", dlg, show_meta=True,
+                                   meta=("标题一", "召回、排序"),
+                                   start_mode="split")
+assert ed.text() == "**粗体** 内容"
+t, kws = ed.meta_values()
+assert t == "标题一" and kws == ["召回", "排序"], (t, kws)
+ed._set_mode("preview")
+assert ed.editor.isHidden() and not ed.preview.isHidden()
+ed._set_mode("edit")
+assert not ed.editor.isHidden() and ed.preview.isHidden()
+ed._set_mode("split")
+assert not ed.editor.isHidden() and not ed.preview.isHidden()
+ed.editor.setPlainText("# 新标题\n正文内容")
+ed._render_preview()
+assert "新标题" in ed.preview.toPlainText()
+assert hasattr(dlg, "_open_fixed_editor")
+print("✓ Markdown 编辑器就位（编辑/预览/分屏/meta）")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
