@@ -4,7 +4,7 @@
 ; 编译：& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "答题助手"
-#define MyAppVersion "2.1"
+#define MyAppVersion "2.1.1"
 #define MyAppPublisher "zhourunnan1210"
 #define MyAppURL "https://github.com/zhourunnan1210/answer-assistant"
 #define MyAppExeName "答题助手.exe"
@@ -32,7 +32,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
 VersionInfoVersion={#MyAppVersion}
 VersionInfoDescription={#MyAppName} 安装程序
-CloseApplications=yes
+CloseApplications=force
+RestartApplications=no
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "tools\ChineseSimplified.isl"

@@ -27,7 +27,25 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
                                QStackedWidget, QSystemTrayIcon, QTextBrowser,
                                QTextEdit, QVBoxLayout, QWidget)
 
-from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT
+from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
+
+APP_VERSION = "2.1.1"
+
+
+def _install_crash_log():
+    """全局未捕获异常（含 PySide6 槽函数内异常）写入 crash.log。
+    打包版无控制台，stderr 被吞，用户反馈"点了没反应"时全靠这份日志定位。"""
+    import traceback as _tb
+
+    def hook(t, v, tb):
+        try:
+            with open(os.path.join(config_dir(), "crash.log"),
+                      "a", encoding="utf-8") as f:
+                f.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] "
+                        + "".join(_tb.format_exception(t, v, tb)))
+        except OSError:
+            pass
+    sys.excepthook = hook
 from audio_capture import LoopbackCapture, MicCapture, merge_wavs
 from llm import (AUTO_PROMPT, ask_interview, ask_text, ask_vision,
                  apply_review, build_fixed_profile, build_flexible_docs,
@@ -1130,6 +1148,12 @@ class SettingsDialog(QDialog):
         self.session_autosave.setChecked(bool(cfg.data.get("session_autosave", True)))
         form_gen.addRow("持续优化", self.session_autosave)
 
+        ver_label = QLabel(f"v{APP_VERSION}（反馈问题请附此版本号；异常日志见 "
+                           "%LOCALAPPDATA%\\答题助手\\crash.log）")
+        ver_label.setWordWrap(True)
+        ver_label.setStyleSheet("color:#9aa3b2; font-size:11px;")
+        form_gen.addRow("版本", ver_label)
+
         # ================= 侧栏 + 卡片页 =================
         self.pages = QStackedWidget()
         self.pages.addWidget(page_model)
@@ -1490,7 +1514,9 @@ class SettingsDialog(QDialog):
         }
         self.cfg.save()  # 预设立即写入配置文件
         self._reload_profiles(select=name)
-        self.test_result.setText(f"✅ 预设「{name}」已保存")
+        self._sync_main_profile_bar()  # 主窗口标题栏下拉即时刷新
+        self.test_result.setStyleSheet("")
+        self.test_result.setText(f"✅ 预设「{name}」已保存（主界面标题栏已同步）")
 
     def _delete_profile(self):
         name = self.profile_combo.currentData()
@@ -1498,7 +1524,15 @@ class SettingsDialog(QDialog):
             del self._profiles()[name]
             self.cfg.save()
             self._reload_profiles()
+            self._sync_main_profile_bar()  # 主窗口标题栏下拉即时刷新
             self.test_result.setText(f"已删除预设「{name}」")
+
+    def _sync_main_profile_bar(self):
+        """预设增删后即时刷新主窗口标题栏的预设下拉框
+        （否则要等设置页以「保存」关闭后才刷新，用户以为没存上）。"""
+        parent = self.parent()
+        if hasattr(parent, "_reload_profile_bar"):
+            parent._reload_profile_bar()
 
     def _apply_preset(self, _index):
         data = self.preset.currentData()
@@ -1604,15 +1638,22 @@ class SettingsDialog(QDialog):
         self.test_result.setText(note)
 
     def _save(self):
-        self.cfg.data.update(self._snapshot())
-        # 旧版简历字段已由资料库接管，保存时迁移并清空
-        import profile_store as ps
-        fixed = self.fixed_editor.toPlainText().strip()
-        if fixed:
-            ps.save_fixed(fixed)
-        self.cfg.data["resume_text"] = ""
-        self.cfg.data["resume_name"] = ""
-        self.cfg.save()
+        try:
+            self.cfg.data.update(self._snapshot())
+            # 旧版简历字段已由资料库接管，保存时迁移并清空
+            import profile_store as ps
+            fixed = self.fixed_editor.toPlainText().strip()
+            if fixed:
+                ps.save_fixed(fixed)
+            self.cfg.data["resume_text"] = ""
+            self.cfg.data["resume_name"] = ""
+            self.cfg.save()
+        except Exception as e:
+            # 保存失败必须让用户看见原因（打包版无控制台），并写 crash.log
+            self.test_result.setStyleSheet("color:#e07878;")
+            self.test_result.setText(
+                f"❌ 保存失败：{e}（详情见 %LOCALAPPDATA%\\答题助手\\crash.log）")
+            raise
         self.accept()
 
 
@@ -2841,6 +2882,7 @@ class MainWindow(QWidget):
 
 
 def main():
+    _install_crash_log()  # 全局异常日志：打包版无控制台，全靠它定位"没反应"类问题
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # 窗口收进托盘后程序继续运行
 

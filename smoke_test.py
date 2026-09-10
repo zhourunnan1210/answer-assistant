@@ -640,6 +640,51 @@ for _k in ("ui_bg_color", "ui_text_color", "ui_text_opacity",
            "answer_bg_color", "answer_text_color", "answer_text_opacity"):
     assert _k in _snap21, _k
 print("✓ v2.1：秒退/启动补复盘/三组颜色透明度定制就位")
+
+# ================= v2.1.1：保存防护 + 预设即时刷新 + 版本可见 + 异常日志 =================
+assert app_main.APP_VERSION
+# _save 异常路径：写配置失败 -> 红字提示 + 不关闭对话框 + 异常上抛（入 crash.log）
+_dlg2 = app_main.SettingsDialog(win.cfg, win)
+_orig_cfgsave = win.cfg.save
+def _boom():
+    raise OSError("磁盘被占用（模拟）")
+win.cfg.save = _boom
+try:
+    _raised = False
+    try:
+        _dlg2._save()
+    except OSError:
+        _raised = True
+    assert _raised and _dlg2.result() == 0  # 未 accept，界面保留
+    assert "保存失败" in _dlg2.test_result.text()
+finally:
+    win.cfg.save = _orig_cfgsave
+# 预设保存/删除即时刷新主窗口标题栏下拉（不再依赖设置页关闭）
+from PySide6.QtWidgets import QInputDialog as _QID
+_orig_gettext = _QID.getText
+_QID.getText = staticmethod(lambda *a, **k: ("冒烟预设", True))
+try:
+    _before_items = [win.profile_bar.itemText(i)
+                     for i in range(win.profile_bar.count())]
+    _dlg2._save_profile()
+    _after_items = [win.profile_bar.itemText(i)
+                    for i in range(win.profile_bar.count())]
+    assert "冒烟预设" not in _before_items and "冒烟预设" in _after_items
+    assert "冒烟预设" in win.cfg.data["profiles"]
+    _dlg2.profile_combo.setCurrentIndex(
+        _dlg2.profile_combo.findText("冒烟预设"))
+    _dlg2._delete_profile()
+    _after_del = [win.profile_bar.itemText(i)
+                  for i in range(win.profile_bar.count())]
+    assert "冒烟预设" not in _after_del
+    assert "冒烟预设" not in win.cfg.data["profiles"]
+finally:
+    _QID.getText = _orig_gettext
+# 异常日志钩子可安装
+app_main._install_crash_log()
+import sys as _sys
+assert _sys.excepthook is not _sys.__excepthook__
+print("✓ v2.1.1：保存防护/预设即时刷新/版本可见/异常日志就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
