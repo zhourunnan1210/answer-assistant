@@ -17,7 +17,8 @@ from PySide6.QtCore import (Qt, QAbstractNativeEventFilter, QBuffer, QEvent,
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import (QColor, QCursor, QFont, QGuiApplication, QIcon,
                            QImage, QPainter, QPen, QPixmap)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDialog,
+                               QComboBox,
                                QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QMenu, QMessageBox, QInputDialog,
@@ -145,11 +146,38 @@ def _with_arrow(style: str) -> str:
         % combo_arrow_path())
 
 
-def _panel_style(ui_alpha: int = 205) -> str:
-    """主面板样式。ui_alpha 为 UI 底板不透明度（0~255），
-    对应设置中的「UI 区域背景不透明度」；默认 205（80%）。"""
+def _hex_rgb(h: str):
+    """'#181b22' -> (24, 27, 34)；非法返回 None。"""
+    h = (h or "").strip().lstrip("#")
+    if len(h) != 6:
+        return None
+    try:
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return None
+
+
+def _rgba(h: str, a, fallback="#e8eaf0") -> str:
+    """hex 颜色 + alpha(0~255) -> Qt rgba() 字符串；非法颜色用 fallback。"""
+    rgb = _hex_rgb(h) or _hex_rgb(fallback)
+    return f"rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {max(0, min(255, int(a)))})"
+
+
+def _panel_style(ui_alpha: int = 205, ui_bg: str = "#181b22",
+                 ui_text: str = "#e8eaf0", ui_text_alpha: int = 255) -> str:
+    """主面板样式。ui_alpha/ui_text_alpha 为 0~255 不透明度；
+    ui_bg 底板颜色、ui_text UI 字体颜色（标题/状态/图标按钮文字由此派生）。"""
     head = PANEL_STYLE_HEAD.replace(
-        "rgba(24, 27, 34, 205)", f"rgba(24, 27, 34, {ui_alpha})")
+        "rgba(24, 27, 34, 205)", _rgba(ui_bg, ui_alpha, "#181b22"))
+    t = _rgba(ui_text, ui_text_alpha)
+    head = head.replace("color: #e8eaf0", f"color: {t}")
+    head = head.replace(
+        "QLabel#title { font-size: 14px; font-weight: bold; color: #ffffff; }",
+        f"QLabel#title {{ font-size: 14px; font-weight: bold; color: {t}; }}")
+    head = head.replace("color: #a6adbb",
+                        f"color: {_rgba(ui_text, ui_text_alpha * 0.72)}")
+    head = head.replace("color: #cfd4de",
+                        f"color: {_rgba(ui_text, ui_text_alpha * 0.85)}")
     return _with_arrow(head)
 
 
@@ -1014,6 +1042,60 @@ class SettingsDialog(QDialog):
         self.answer_bg.setToolTip("答案显示区的背景不透明度，越低越透")
         form_gen.addRow("答案区背景", ans_row)
 
+        # ---- 三组颜色定制：UI 底板 / UI 字体 / 答案区背景 / 答案字体 ----
+        def _color_btn(key, default):
+            btn = QPushButton()
+            btn.setFixedSize(52, 24)
+            btn.setProperty("color", cfg.data.get(key) or default)
+            btn.setToolTip("点击选择颜色")
+
+            def _refresh(b=btn):
+                b.setStyleSheet(
+                    f"background:{b.property('color')};"
+                    "border:1px solid rgba(255,255,255,70); border-radius:5px;")
+
+            def _pick(b=btn, r=_refresh):
+                picker = QColorDialog(QColor(b.property("color")), self)
+                set_capture_immune(picker, True)  # 取色窗口同样对共享隐身
+                if picker.exec() == QDialog.Accepted:
+                    b.setProperty("color", picker.selectedColor().name())
+                    r()
+            btn.clicked.connect(_pick)
+            _refresh()
+            return btn
+
+        def _color_row(key, default, opacity_key=None, opacity_default=1.0):
+            row = QHBoxLayout()
+            btn = _color_btn(key, default)
+            row.addWidget(btn)
+            slider = None
+            if opacity_key is not None:
+                sub, slider = _pct_slider(
+                    float(cfg.data.get(opacity_key, opacity_default)))
+                row.addLayout(sub)
+            else:
+                hint = QLabel("透明度用上方滑杆")
+                hint.setStyleSheet("color:#9aa3b2; font-size:11px;")
+                row.addWidget(hint)
+                row.addStretch()
+            return row, btn, slider
+
+        ui_bg_row, self.ui_bg_color_btn, _ = _color_row(
+            "ui_bg_color", "#181b22")
+        form_gen.addRow("UI 底板颜色", ui_bg_row)
+
+        ui_text_row, self.ui_text_color_btn, self.ui_text_op = _color_row(
+            "ui_text_color", "#e8eaf0", "ui_text_opacity", 1.0)
+        form_gen.addRow("UI 字体", ui_text_row)
+
+        ans_bg_row, self.answer_bg_color_btn, _ = _color_row(
+            "answer_bg_color", "#ffffff")
+        form_gen.addRow("答案区背景色", ans_bg_row)
+
+        ans_text_row, self.answer_text_color_btn, self.answer_text_op = _color_row(
+            "answer_text_color", "#f2f4f8", "answer_text_opacity", 1.0)
+        form_gen.addRow("答案字体", ans_text_row)
+
         self.immersive = QCheckBox("沉浸式模式（问答/面试时）")
         self.immersive.setToolTip(
             "开启后，在问答/面试模式下：\n"
@@ -1441,6 +1523,12 @@ class SettingsDialog(QDialog):
             "window_opacity": self.opacity.value() / 100,
             "ui_bg_opacity": self.ui_bg.value() / 100,
             "answer_bg_opacity": self.answer_bg.value() / 100,
+            "ui_bg_color": self.ui_bg_color_btn.property("color"),
+            "ui_text_color": self.ui_text_color_btn.property("color"),
+            "ui_text_opacity": self.ui_text_op.value() / 100,
+            "answer_bg_color": self.answer_bg_color_btn.property("color"),
+            "answer_text_color": self.answer_text_color_btn.property("color"),
+            "answer_text_opacity": self.answer_text_op.value() / 100,
             "immersive_mode": self.immersive.isChecked(),
             "qa_thinking": self.qa_thinking.isChecked(),
             "stealth_compat": self.stealth_compat.isChecked(),
@@ -1720,6 +1808,8 @@ class MainWindow(QWidget):
         self._apply_capture_immunity()
         self._reload_profile_bar()
         self._setup_tray()
+        # 上次若是强退（_quit_app 不发起复盘请求），启动后延迟补生成缺失的复盘
+        QTimer.singleShot(2500, self._maybe_backfill_review)
 
     # ---- 系统托盘 ----
 
@@ -1838,19 +1928,28 @@ class MainWindow(QWidget):
     # ---- 全局快捷键 ----
 
     def _apply_answer_style(self):
-        """答案区样式：字号 + 背景不透明度（白色叠加层，只影响背景不伤文字）。"""
+        """答案区样式：字号 + 背景颜色/不透明度 + 字体颜色/不透明度。"""
         n = int(self.cfg.data.get("font_size", 14))
-        a = round(max(0.0, min(1.0,
-                float(self.cfg.data.get("answer_bg_opacity", 0.05)))) * 255)
+        d = self.cfg.data
+        bg = _rgba(d.get("answer_bg_color", "#ffffff"),
+                   round(max(0.0, min(1.0, float(d.get("answer_bg_opacity", 0.05)))) * 255),
+                   "#ffffff")
+        fg = _rgba(d.get("answer_text_color", "#f2f4f8"),
+                   round(max(0.0, min(1.0, float(d.get("answer_text_opacity", 1.0)))) * 255))
         self.answer.setStyleSheet(
-            f"font-size: {n}px; background-color: rgba(255, 255, 255, {a});"
-            " color: #f2f4f8; border: none; border-radius: 8px; padding: 6px;")
+            f"font-size: {n}px; background-color: {bg};"
+            f" color: {fg}; border: none; border-radius: 8px; padding: 6px;")
 
     def _apply_panel_style(self):
-        """UI 区域底板样式：按设置的不透明度重刷整面板背景。"""
+        """UI 区域样式：底板颜色/不透明度 + UI 字体颜色/不透明度。"""
+        d = self.cfg.data
         a = round(max(0.0, min(1.0,
-                float(self.cfg.data.get("ui_bg_opacity", 0.80)))) * 255)
-        self.setStyleSheet(_panel_style(a))
+                float(d.get("ui_bg_opacity", 0.80)))) * 255)
+        ta = round(max(0.0, min(1.0,
+                float(d.get("ui_text_opacity", 1.0)))) * 255)
+        self.setStyleSheet(_panel_style(
+            a, d.get("ui_bg_color", "#181b22"),
+            d.get("ui_text_color", "#e8eaf0"), ta))
 
     # ---- 全局快捷键 ----
 
@@ -2216,8 +2315,11 @@ class MainWindow(QWidget):
 
     # ---- 资料库持续优化（场次记录 + 自动复盘）----
 
-    def _save_session(self):
-        """面试结束/退出时：保存本场记录到资料库 sessions/，并后台生成复盘。"""
+    def _save_session(self, review: bool = True):
+        """面试结束/退出时：保存本场记录到资料库 sessions/，并后台生成复盘。
+        review=False 用于进程退出路径：只落盘记录，不发起复盘网络请求
+        （QThread 网络请求会阻塞进程退出最长 120s）；缺失的复盘由下次
+        启动时的 _maybe_backfill_review 补生成。"""
         self._flush_me_buffer()  # mic 缓冲先入库，再保存
         log, self._session_log = self._session_log, []
         filtered, self._session_filtered = self._session_filtered, []
@@ -2235,10 +2337,37 @@ class MainWindow(QWidget):
             return
         if not self.cfg.data.get("api_key"):
             return  # 未配置模型则只保存记录，跳过复盘
+        if not review:
+            self.status.setText("面试记录已保存；复盘将在下次启动时补生成")
+            return  # 进程退出路径：不发起复盘网络请求，保证秒退
         session_text = "\n".join(log)
         snap = dict(self.cfg.data)
         self._review_thread = FuncThread(
             lambda: generate_review(snap, session_text), self)
+        self._review_thread.done.connect(self._on_review_done)
+        self._review_thread.start()
+
+    def _maybe_backfill_review(self):
+        """启动时补复盘：若最新场次记录比最新复盘更新（上次强退导致未生成），
+        且已配置模型，则后台补生成一次。幂等：补完后 reviews/ 即最新。"""
+        if not self.cfg.data.get("session_autosave", True):
+            return
+        if not self.cfg.data.get("api_key"):
+            return
+        import profile_store as ps
+        sess = ps.latest_md(ps.sessions_dir())
+        if not sess:
+            return
+        rev = ps.latest_md(ps.reviews_dir())
+        if rev and rev[1] >= sess[1]:
+            return  # 复盘已是最新
+        text = ps.read_session(sess[0])
+        if not text:
+            return
+        self.status.setText("检测到上次面试未生成复盘，正在后台补生成…")
+        snap = dict(self.cfg.data)
+        self._review_thread = FuncThread(
+            lambda: generate_review(snap, text), self)
         self._review_thread.done.connect(self._on_review_done)
         self._review_thread.start()
 
@@ -2334,8 +2463,9 @@ class MainWindow(QWidget):
                     return
             self.status.setText("回答已生成 ✅")
             body = html.escape(text).replace("\n", "<br>")
-            self._ans_append(
-                f"<span style='color:#f2f4f8'>💬 {body}</span><br>")
+            # 正文不带行内颜色，继承答案区样式表的 color（用户可定制字体颜色/透明度）；
+            # 状态提示（听到/正在说话/错误）保留各自语义色
+            self._ans_append(f"<span>💬 {body}</span><br>")
             if self.interview_btn.isChecked():
                 self._session_log.append(f"助手建议：{text}")
         # 生成期间面试官又讲了新内容 → 重新计时，静默后自动跟进
@@ -2421,13 +2551,16 @@ class MainWindow(QWidget):
 
     def _quit_app(self):
         self._stop_capture()
-        self._save_session()  # 持续优化：退出前保存本场面试记录并生成复盘
+        self._save_session(review=False)  # 只落盘记录；复盘留到下次启动补生成
         self._save_win_size()
         self.cfg.save()
         for hid in self.ALL_HOTKEY_IDS:
             ctypes.windll.user32.UnregisterHotKey(None, hid)
         self.tray.hide()
-        QApplication.instance().quit()
+        # os._exit 立即结束进程：QThread 析构会 wait() 等在途的网络请求
+        # （回答生成/复盘/ASR，timeout 最长 120s），导致"无法退出"。
+        # 此处配置与面试记录均已同步落盘，强杀无任何损失。
+        os._exit(0)
 
     def closeEvent(self, e):
         # 先走正常模式关闭链：停采集 → 保存本场面试记录 → 后台生成复盘，

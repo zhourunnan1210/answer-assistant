@@ -571,6 +571,75 @@ assert len(_glob.glob(os.path.join(_sessions_dir, "*.md"))) == _sbefore + 1, \
 # 设置界面：qa_thinking 开关存在且入快照
 assert hasattr(dlg, "qa_thinking") and "qa_thinking" in dlg._snapshot()
 print("✓ v2.0：mic 合并/提示词迁移/独立思考开关/退出落盘就位")
+
+# ================= v2.1：秒退 + 启动补复盘 + 三组颜色透明度定制 =================
+import inspect as _insp21
+# 退出路径：_quit_app 只落盘不发起复盘网络请求，且 os._exit 秒退兜底
+_quit_src = _insp21.getsource(app_main.MainWindow._quit_app)
+assert "review=False" in _quit_src and "os._exit(0)" in _quit_src
+# _save_session(review=False)：保存记录但不启动复盘线程
+_sbefore21 = len(_glob.glob(os.path.join(_sessions_dir, "*.md")))
+win._session_log = ["面试官：v2.1 测试", "我：测试回答"]
+win.cfg.data["api_key"] = ""  # 双保险：即使误走复盘分支也无网络
+win._review_thread = None
+win._save_session(review=False)
+assert win._review_thread is None  # 未启动复盘线程
+assert len(_glob.glob(os.path.join(_sessions_dir, "*.md"))) == _sbefore21 + 1
+win._save_session(review=False)
+assert len(_glob.glob(os.path.join(_sessions_dir, "*.md"))) == _sbefore21 + 1  # 幂等
+
+# 启动补复盘：session 比 review 新 -> 触发；review 更新后 -> 不触发
+# 注意：main.py 是 from llm import generate_review，mock 必须打在 app_main 的本地绑定上
+win.cfg.data["api_key"] = "k"
+_win_review_calls = []
+_orig_gen = app_main.generate_review
+app_main.generate_review = lambda cfg, text: _win_review_calls.append(text) or "复盘"
+try:
+    win._review_thread = None
+    win._maybe_backfill_review()
+    assert win._review_thread is not None  # 已触发补生成线程
+    win._review_thread.wait(3000)  # 等线程跑完（mock 立即返回）
+    QApplication.processEvents()   # 泵 done 信号到 GUI 线程
+    win._on_review_done("复盘", "")  # 兜底：确保复盘落盘（信号已到则只是多存一次）
+    win._review_thread = None
+    win._maybe_backfill_review()  # reviews/ 已更新 -> 幂等不再触发
+    assert win._review_thread is None
+    assert len(_win_review_calls) == 1
+finally:
+    app_main.generate_review = _orig_gen
+
+# 颜色工具与样式参数化
+assert app_main._hex_rgb("#181b22") == (24, 27, 34)
+assert app_main._hex_rgb("bad") is None and app_main._hex_rgb("#12345") is None
+assert app_main._rgba("#ff0000", 128) == "rgba(255, 0, 0, 128)"
+_st = app_main._panel_style(100, "#102030", "#a0b0c0", 200)
+assert "rgba(16, 32, 48, 100)" in _st and "rgba(160, 176, 192, 200)" in _st
+_st_def = app_main._panel_style(205)
+assert "rgba(24, 27, 34, 205)" in _st_def and "#e8eaf0" in _st_def.replace(
+    "rgba(232, 234, 240, 255)", "#e8eaf0")  # 默认与旧版一致
+# 答案区样式读取四键
+win.cfg.data.update({"answer_bg_color": "#000000", "answer_bg_opacity": 0.5,
+                     "answer_text_color": "#00ff00", "answer_text_opacity": 0.8})
+win._apply_answer_style()
+_ss = win.answer.styleSheet()
+assert "rgba(0, 0, 0, 128)" in _ss and "rgba(0, 255, 0, 204)" in _ss
+# 面板样式读取四键
+win.cfg.data.update({"ui_bg_color": "#102030", "ui_bg_opacity": 1.0,
+                     "ui_text_color": "#ffffff", "ui_text_opacity": 0.5})
+win._apply_panel_style()
+assert "rgba(16, 32, 48, 255)" in win.styleSheet()
+win.cfg.data.update({  # 还原默认，避免影响后续/真实观感
+    "answer_bg_color": "#ffffff", "answer_bg_opacity": 0.05,
+    "answer_text_color": "#f2f4f8", "answer_text_opacity": 1.0,
+    "ui_bg_color": "#181b22", "ui_bg_opacity": 0.80,
+    "ui_text_color": "#e8eaf0", "ui_text_opacity": 1.0})
+win._apply_answer_style(); win._apply_panel_style()
+# 设置界面：四个色块按钮 + 两个字体透明度滑杆入快照
+_snap21 = dlg._snapshot()
+for _k in ("ui_bg_color", "ui_text_color", "ui_text_opacity",
+           "answer_bg_color", "answer_text_color", "answer_text_opacity"):
+    assert _k in _snap21, _k
+print("✓ v2.1：秒退/启动补复盘/三组颜色透明度定制就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

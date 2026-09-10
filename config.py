@@ -156,6 +156,12 @@ DEFAULTS = {
     "prompt_improvements": "",           # 复盘给出的宏观提示词改进（用户级，不随预设）
     "ui_bg_opacity": 0.80,               # UI 区域（标题栏/按钮区底板）背景不透明度 0~1
     "answer_bg_opacity": 0.05,           # 答案区背景不透明度 0~1（白色叠加层）
+    "ui_bg_color": "#181b22",            # UI 底板颜色
+    "ui_text_color": "#e8eaf0",          # UI 字体颜色（标题/状态/按钮文字统一派生）
+    "ui_text_opacity": 1.0,              # UI 字体不透明度 0~1
+    "answer_bg_color": "#ffffff",        # 答案区背景颜色
+    "answer_text_color": "#f2f4f8",      # 答案字体颜色
+    "answer_text_opacity": 1.0,          # 答案字体不透明度 0~1
     "profiles": {},                      # 我的预设：{名称: {provider, base_url, api_key, model, thinking}}
     # ---- 问答助手（语音识别 + 文本问答）----
     "qa_prompt": QA_PROMPT,              # 问答专用提示词

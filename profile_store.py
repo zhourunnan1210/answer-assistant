@@ -215,6 +215,28 @@ def reviews_dir() -> str:
     return os.path.join(base_dir(), "reviews")
 
 
+def latest_md(dir_path: str):
+    """目录里最新 .md 文件的 (路径, mtime)；无文件或目录不存在返回 None。"""
+    try:
+        files = [os.path.join(dir_path, f)
+                 for f in os.listdir(dir_path) if f.endswith(".md")]
+    except OSError:
+        return None
+    if not files:
+        return None
+    newest = max(files, key=os.path.getmtime)
+    return newest, os.path.getmtime(newest)
+
+
+def read_session(path: str) -> str:
+    """读取场次记录全文（供补生成复盘用）。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def merge_flex(docs: list, updates: list, additions: list) -> list:
     """按标题合并复盘优化结果：同标题覆盖更新，新主题追加。
     updates 里找不到同标题的自动转为追加，宁多勿丢。"""
