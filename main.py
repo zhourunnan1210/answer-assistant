@@ -19,7 +19,7 @@ from PySide6.QtGui import (QColor, QCursor, QFont, QGuiApplication, QIcon,
                            QImage, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDialog,
                                QComboBox,
-                               QDialog, QDialogButtonBox, QFileDialog,
+                               QDialog, QDialogButtonBox, QFileDialog, QFrame,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QMenu, QMessageBox, QInputDialog,
                                QPlainTextEdit, QPushButton, QRadioButton,
@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.2"
 
 
 def _install_crash_log():
@@ -770,10 +770,9 @@ class SettingsDialog(QDialog):
         self.thinking.setChecked(bool(getattr(cfg, "thinking", True)))
         form.addRow("思考模式", self.thinking)
 
-        hint = QLabel("提示：截图答题需要模型支持图片输入；DeepSeek 官方仅 "
-                      "deepseek-v4-flash-vision-exp 支持图片。")
+        hint = QLabel("答题模型需支持图片输入（多模态）")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#9aa3b2; font-size:11px;")
+        hint.setStyleSheet("color:#9aa3b2; font-size:10px;")
         form.addRow("", hint)
 
         self.prompt = QPlainTextEdit(cfg.prompt or DEFAULT_PROMPT)
@@ -1734,16 +1733,21 @@ class MainWindow(QWidget):
         self.top_btn.clicked.connect(self._toggle_topmost)
         set_btn = QPushButton("⚙", objectName="icon", toolTip="设置")
         set_btn.clicked.connect(self._open_settings)
+        self.look_btn = QPushButton(
+            "🎨", objectName="icon",
+            toolTip="外观：颜色 / 透明度 / 字号，实时预览调整")
+        self.look_btn.setCheckable(True)
+        self.look_btn.toggled.connect(self._toggle_look_panel)
         min_btn = QPushButton("—", objectName="icon", toolTip="最小化到系统托盘")
         min_btn.clicked.connect(self._minimize_to_tray)
         close_btn = QPushButton("✕", objectName="close", toolTip="退出程序")
         close_btn.clicked.connect(self._quit_app)
-        for b in (self.top_btn, set_btn, min_btn, close_btn):
+        for b in (self.top_btn, set_btn, self.look_btn, min_btn, close_btn):
             bar.addWidget(b)
         lay.addLayout(bar)
         # 沉浸式模式下可被隐藏的「外壳」控件（答案区始终保留）
         self._chrome = [title, self.profile_bar, self.top_btn,
-                        set_btn, min_btn, close_btn]
+                        set_btn, self.look_btn, min_btn, close_btn]
 
         # 答案区
         self.answer = QTextEdit(readOnly=True,
@@ -1754,6 +1758,11 @@ class MainWindow(QWidget):
         # 状态
         self.status = QLabel("就绪", objectName="status")
         lay.addWidget(self.status)
+
+        # 外观实时调整面板（标题栏 🎨 按钮展开/收起，收起时自动保存）
+        self.look_panel = self._build_look_panel()
+        self.look_panel.setVisible(False)
+        lay.addWidget(self.look_panel)
 
         # 问答助手：回答按钮（开启问答模式时才显示）
         self.qa_answer_btn = QPushButton("💬 回答刚才的问题（Ctrl+Alt+W）",
@@ -1992,6 +2001,137 @@ class MainWindow(QWidget):
             a, d.get("ui_bg_color", "#181b22"),
             d.get("ui_text_color", "#e8eaf0"), ta))
 
+    # ---- 外观实时调整面板（主窗口 🎨 按钮） ----
+
+    def _build_look_panel(self):
+        """内嵌在主窗口的外观调整小面板：改动立即生效，收起时统一保存。"""
+        frame = QFrame()
+        frame.setStyleSheet(
+            "QFrame { background: rgba(255,255,255,14);"
+            " border: 1px solid rgba(255,255,255,36); border-radius: 8px; }")
+        form = QFormLayout(frame)
+        form.setContentsMargins(10, 8, 10, 8)
+        form.setSpacing(6)
+        d = self.cfg.data
+        self._lk = {}  # key -> widget，便于同步
+
+        # 窗口不透明度
+        op = QSlider(Qt.Horizontal)
+        op.setRange(50, 100)
+        op.setValue(round(float(d.get("window_opacity", 0.92)) * 100))
+        op.valueChanged.connect(
+            lambda v: self._lk_apply("window_opacity", v / 100))
+        self._lk["window_opacity"] = op
+        form.addRow("窗口不透明度", self._lk_row(op))
+
+        # 答案字号
+        fs = QSpinBox()
+        fs.setRange(10, 28)
+        fs.setSuffix(" px")
+        fs.setValue(int(d.get("font_size", 14)))
+        fs.valueChanged.connect(lambda v: self._lk_apply("font_size", int(v)))
+        self._lk["font_size"] = fs
+        form.addRow("答案字号", fs)
+
+        # 四组 颜色+透明度
+        rows = [
+            ("UI 底板", "ui_bg_color", "#181b22", "ui_bg_opacity", 0.80),
+            ("UI 字体", "ui_text_color", "#e8eaf0", "ui_text_opacity", 1.0),
+            ("答案区背景", "answer_bg_color", "#ffffff",
+             "answer_bg_opacity", 0.05),
+            ("答案字体", "answer_text_color", "#f2f4f8",
+             "answer_text_opacity", 1.0),
+        ]
+        for label, ckey, cdef, okey, odef in rows:
+            btn = self._lk_color_btn(ckey, cdef)
+            s = QSlider(Qt.Horizontal)
+            s.setRange(0, 100)
+            s.setValue(round(max(0.0, min(1.0,
+                             float(d.get(okey, odef)))) * 100))
+            s.valueChanged.connect(
+                lambda v, k=okey: self._lk_apply(k, v / 100))
+            self._lk[ckey] = btn
+            self._lk[okey] = s
+            form.addRow(label, self._lk_row(btn, s))
+        return frame
+
+    def _lk_row(self, *widgets):
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        for x in widgets:
+            row.addWidget(x, stretch=1 if isinstance(x, QSlider) else 0)
+        return w
+
+    def _lk_color_btn(self, key, default):
+        btn = QPushButton()
+        btn.setFixedSize(46, 22)
+        btn.setProperty("color", self.cfg.data.get(key) or default)
+        btn.setToolTip("点击选择颜色（实时生效）")
+
+        def refresh():
+            btn.setStyleSheet(
+                f"background:{btn.property('color')};"
+                "border:1px solid rgba(255,255,255,70); border-radius:5px;")
+
+        def pick():
+            picker = QColorDialog(QColor(btn.property("color")), self)
+            set_capture_immune(picker, True)  # 取色窗口同样对共享隐身
+            if picker.exec() == QDialog.Accepted:
+                btn.setProperty("color", picker.selectedColor().name())
+                refresh()
+                self._lk_apply(key, btn.property("color"))
+
+        btn.clicked.connect(pick)
+        refresh()
+        return btn
+
+    def _lk_apply(self, key, value):
+        """实时应用一项外观改动（不落盘，收起面板时统一保存）。"""
+        self.cfg.data[key] = value
+        if key == "window_opacity":
+            if not self._stealth_compat:
+                self.setWindowOpacity(float(value))
+        elif key == "font_size":
+            self._apply_answer_style()
+        elif key.startswith("answer_"):
+            self._apply_answer_style()
+        else:
+            self._apply_panel_style()
+
+    def _toggle_look_panel(self, on):
+        self.look_panel.setVisible(on)
+        if on:
+            self._sync_look_panel()
+        else:
+            self.cfg.save()  # 收起时统一落盘
+
+    def _sync_look_panel(self):
+        """设置窗口可能改过外观项，展开面板时从配置同步各控件值。"""
+        if not hasattr(self, "_lk"):
+            return
+        d = self.cfg.data
+        defaults = {"window_opacity": 0.92, "font_size": 14,
+                    "ui_bg_color": "#181b22", "ui_bg_opacity": 0.80,
+                    "ui_text_color": "#e8eaf0", "ui_text_opacity": 1.0,
+                    "answer_bg_color": "#ffffff", "answer_bg_opacity": 0.05,
+                    "answer_text_color": "#f2f4f8", "answer_text_opacity": 1.0}
+        for key, w in self._lk.items():
+            val = d.get(key, defaults[key])
+            w.blockSignals(True)
+            if isinstance(w, QSlider):
+                w.setValue(round(float(val) * 100))
+            elif isinstance(w, QSpinBox):
+                w.setValue(int(val))
+            else:  # 颜色按钮
+                w.setProperty("color", val or defaults[key])
+                w.setStyleSheet(
+                    f"background:{w.property('color')};"
+                    "border:1px solid rgba(255,255,255,70);"
+                    " border-radius:5px;")
+            w.blockSignals(False)
+
     # ---- 全局快捷键 ----
 
     HOTKEY_ID_ASK, HOTKEY_ID_CYCLE, HOTKEY_ID_CLEAR, HOTKEY_ID_QA = 1, 2, 3, 4
@@ -2197,6 +2337,7 @@ class MainWindow(QWidget):
             return
         if not show:
             self._immersive_geo = self.geometry()
+            self.look_btn.setChecked(False)  # 收起外观面板（不在 _chrome 中）
             for w in self._chrome:
                 w.hide()
             self.qa_answer_btn.hide()
@@ -2591,13 +2732,15 @@ class MainWindow(QWidget):
             self.cfg.set("win_size", [self.width(), self.height()])
 
     def _quit_app(self):
+        # 先隐藏主窗口和托盘图标：视觉上"秒关"，收尾工作随后在后台完成
+        self.hide()
+        self.tray.hide()
         self._stop_capture()
         self._save_session(review=False)  # 只落盘记录；复盘留到下次启动补生成
         self._save_win_size()
         self.cfg.save()
         for hid in self.ALL_HOTKEY_IDS:
             ctypes.windll.user32.UnregisterHotKey(None, hid)
-        self.tray.hide()
         # os._exit 立即结束进程：QThread 析构会 wait() 等在途的网络请求
         # （回答生成/复盘/ASR，timeout 最长 120s），导致"无法退出"。
         # 此处配置与面试记录均已同步落盘，强杀无任何损失。
@@ -2633,6 +2776,7 @@ class MainWindow(QWidget):
             self._apply_capture_immunity()
             self._reload_profile_bar()  # 预设可能被增删，刷新标题栏下拉
             self._sync_immersive_timer()  # 沉浸式开关可能变化
+            self._sync_look_panel()  # 外观面板若开着，同步为最新配置
             if (self.monitor_btn is not None and self.monitor_btn.isChecked()):
                 self.monitor_timer.start(self.cfg.monitor_interval_ms)
 

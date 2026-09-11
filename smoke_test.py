@@ -685,6 +685,56 @@ app_main._install_crash_log()
 import sys as _sys
 assert _sys.excepthook is not _sys.__excepthook__
 print("✓ v2.1.1：保存防护/预设即时刷新/版本可见/异常日志就位")
+
+# ================= v2.2：秒关视觉优化 + 提示精简 + 主窗口外观实时面板 =================
+assert app_main.APP_VERSION == "2.2"
+# _quit_app：先隐藏窗口与托盘（视觉秒关），再做收尾
+_qs = _insp21.getsource(app_main.MainWindow._quit_app)
+assert _qs.index("self.hide()") < _qs.index("self._stop_capture()")
+assert _qs.index("self.tray.hide()") < _qs.index("self._stop_capture()")
+# 答题模型提示：精简为一句小字
+_hints = [l.text() for l in dlg.findChildren(app_main.QLabel)
+          if "图片输入" in l.text()]
+assert any("多模态" in t and "deepseek-v4-flash-vision-exp" not in t
+           for t in _hints), _hints
+# 外观面板：默认隐藏，🎨 按钮可切换
+assert hasattr(win, "look_btn") and win.look_btn.isCheckable()
+assert hasattr(win, "look_panel") and not win.look_panel.isVisible()
+for _k in ("window_opacity", "font_size", "ui_bg_color", "ui_bg_opacity",
+           "ui_text_color", "ui_text_opacity", "answer_bg_color",
+           "answer_bg_opacity", "answer_text_color", "answer_text_opacity"):
+    assert _k in win._lk, _k
+# 实时应用：字号 / 答案字体透明度 / UI 字体透明度 / 窗口不透明度
+win._lk_apply("font_size", 18)
+assert win.cfg.data["font_size"] == 18
+assert "font-size: 18px" in win.answer.styleSheet()
+win._lk_apply("answer_text_opacity", 0.5)
+assert "rgba(242, 244, 248, 128)" in win.answer.styleSheet()
+win._lk_apply("answer_text_opacity", 1.0)
+win._lk_apply("ui_text_opacity", 0.5)
+assert win.cfg.data["ui_text_opacity"] == 0.5
+win._lk_apply("ui_text_opacity", 1.0)
+win._lk_apply("window_opacity", 0.8)
+assert win.cfg.data["window_opacity"] == 0.8
+win._lk_apply("font_size", 14)
+# 展开同步 + 收起保存
+win.cfg.data["font_size"] = 20
+_save_calls = []
+win.cfg.save = lambda: _save_calls.append(1)
+try:
+    win.look_btn.setChecked(True)
+    assert win.look_panel.isVisible()
+    assert win._lk["font_size"].value() == 20  # 展开时同步最新配置
+    win.look_btn.setChecked(False)
+    assert not win.look_panel.isVisible()
+    assert len(_save_calls) == 1  # 收起时统一落盘
+finally:
+    win.cfg.save = _orig_cfgsave
+win.cfg.data["font_size"] = 14
+# 沉浸式隐藏时收起外观面板（面板不在 _chrome 中）
+assert "look_btn.setChecked(False)" in _insp21.getsource(
+    app_main.MainWindow._set_immersive_ui)
+print("✓ v2.2：秒关视觉优化/提示精简/外观实时调整面板就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
