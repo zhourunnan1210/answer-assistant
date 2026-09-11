@@ -789,7 +789,6 @@ assert win._lk["ui_bg_opacity"].minimumWidth() == 64
 # 一键透明模式：样式生成器
 _st_tp = app_main._transparent_style("#e8eaf0", 255)
 assert "background: transparent" in _st_tp
-assert "color: rgba(0, 0, 0, 0)" in _st_tp  # 图标平时隐形
 # 开关实时切换：面板/答案区背景透明，文字颜色保留
 win._lk_transparent.setChecked(True)
 assert win.cfg.data["transparent_mode"] is True
@@ -809,7 +808,7 @@ assert "transparent_mode" in dlg._snapshot()
 print("✓ v2.4：面板防压缩重构/一键透明模式就位")
 
 # ================= v2.5：透明模式可拖动 + 按钮 emoji 同步去除 =================
-assert app_main.APP_VERSION == "2.5"
+assert app_main.APP_VERSION
 # 拖动修复：底板画 1/255 透明度的近透明色，窗口不再像素级穿透
 assert "rgba(0, 0, 0, 1)" in app_main._transparent_style()
 # emoji 剥离工具
@@ -836,6 +835,31 @@ assert win.ask_btn.text() == "🔍 识别本题"
 assert win.title_lbl.text() == "🎯 答题助手"
 assert win.region_btn.text() == "▣ 框选区域"
 print("✓ v2.5：透明模式可拖动/按钮 emoji 同步去除就位")
+
+# ================= v2.5.1：纯图标按钮透明模式改显文字（答案区文字样式） =================
+assert app_main.APP_VERSION == "2.5.1"
+# 图标按钮文字色与答案区文字一致（answer_fg 参数化）
+_st_ic = app_main._transparent_style("#e8eaf0", 255, "rgba(1, 2, 3, 255)")
+assert "color: rgba(1, 2, 3, 255)" in _st_ic
+assert "rgba(0, 0, 0, 0)" not in _st_ic  # 不再有"隐形+悬停浮现"逻辑
+# 透明模式：纯图标按钮改显文字；退出恢复图标
+win._lk_transparent.setChecked(True)
+for attr, word in (("top_btn", "置顶"), ("set_btn", "设置"),
+                   ("look_btn", "外观"), ("min_btn", "最小化"),
+                   ("close_btn", "退出")):
+    assert getattr(win, attr).text() == word, (attr, getattr(win, attr).text())
+# 自定义答案字体颜色后，图标按钮文字跟随
+win.cfg.data.update({"answer_text_color": "#00ff00",
+                     "answer_text_opacity": 1.0})
+win._apply_panel_style()
+assert "rgba(0, 255, 0, 255)" in win.styleSheet()
+win._lk_transparent.setChecked(False)
+for attr, emoji in (("top_btn", "📌"), ("set_btn", "⚙"), ("look_btn", "🎨"),
+                    ("min_btn", "—"), ("close_btn", "✕")):
+    assert getattr(win, attr).text() == emoji, attr
+win.cfg.data.update({"answer_text_color": "#f2f4f8"})
+win._apply_panel_style()
+print("✓ v2.5.1：纯图标按钮透明模式改显文字就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

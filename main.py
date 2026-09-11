@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.5"
+APP_VERSION = "2.5.1"
 
 
 def _install_crash_log():
@@ -207,12 +207,11 @@ def _panel_style(ui_alpha: int = 205, ui_bg: str = "#181b22",
 
 
 def _transparent_style(ui_text: str = "#e8eaf0", ui_text_alpha: int = 255,
-                       ui_icon: str = None, ui_icon_alpha=None) -> str:
-    """一键透明模式：底板/按钮背景/图标全部透明化，**文字颜色保持不变**；
-    图标平时隐形，鼠标悬停时浮现，置顶等激活态保持可见。"""
+                       answer_fg: str = "rgba(242, 244, 248, 255)") -> str:
+    """一键透明模式：底板/按钮背景全部不可见，emoji 图标全部消失
+    （纯图标按钮改显文字，文字样式与答案区一致，由 answer_fg 传入）；
+    **所有文字颜色保持不变**。底板画 1/255 近透明色以保证窗口可拖动。"""
     t = _rgba(ui_text, ui_text_alpha)
-    icon = (_rgba(ui_icon, 255 if ui_icon_alpha is None else ui_icon_alpha)
-            if ui_icon else t)
     sub = _rgba(ui_text, ui_text_alpha * 0.72)
     return _with_arrow(f"""
 /* 底板画 rgba(0,0,0,1)：1/255 透明度肉眼不可见，但窗口不再"像素级穿透"，
@@ -231,16 +230,17 @@ QPushButton:checked {{ background: rgba(255, 255, 255, 26); color: {t}; }}
 QPushButton:disabled {{ color: #777; }}
 QPushButton#primary {{ background: transparent; color: {t}; font-weight: bold; }}
 QPushButton#primary:hover {{ background: rgba(255, 255, 255, 30); }}
+/* 图标按钮：图标消失、改显文字，文字样式与答案区一致（answer_fg） */
 QPushButton#icon {{
     background: transparent; border: 1px solid transparent;
-    border-radius: 6px; padding: 4px 8px; font-size: 13px;
-    color: rgba(0, 0, 0, 0);
+    border-radius: 6px; padding: 4px 6px; font-size: 12px; color: {answer_fg};
 }}
-QPushButton#icon:hover {{ background: rgba(255, 255, 255, 30); color: {icon}; }}
+QPushButton#icon:hover {{ background: rgba(255, 255, 255, 30); }}
 QPushButton#icon:checked {{
-    background: rgba(255, 255, 255, 26); color: {icon};
+    background: rgba(255, 255, 255, 26); color: {answer_fg};
     border: 1px solid rgba(255, 255, 255, 40);
 }}
+QPushButton#close {{ color: {answer_fg}; }}
 QPushButton#close:hover {{ background: rgba(224, 78, 78, 210); color: #ffffff; }}
 QTextEdit {{
     background: transparent; color: #f2f4f8; border: none;
@@ -1817,17 +1817,18 @@ class MainWindow(QWidget):
         self.top_btn.setCheckable(True)
         self.top_btn.setChecked(self.cfg.always_on_top)
         self.top_btn.clicked.connect(self._toggle_topmost)
-        set_btn = QPushButton("⚙", objectName="icon", toolTip="设置")
-        set_btn.clicked.connect(self._open_settings)
+        self.set_btn = QPushButton("⚙", objectName="icon", toolTip="设置")
+        self.set_btn.clicked.connect(self._open_settings)
         self.look_btn = QPushButton(
             "🎨", objectName="icon",
             toolTip="外观：颜色 / 透明度 / 字号，实时预览调整")
         self.look_btn.setCheckable(True)
         self.look_btn.toggled.connect(self._toggle_look_panel)
-        min_btn = QPushButton("—", objectName="icon", toolTip="最小化到系统托盘")
-        min_btn.clicked.connect(self._minimize_to_tray)
-        close_btn = QPushButton("✕", objectName="close", toolTip="退出程序")
-        close_btn.clicked.connect(self._quit_app)
+        self.min_btn = QPushButton("—", objectName="icon", toolTip="最小化到系统托盘")
+        self.min_btn.clicked.connect(self._minimize_to_tray)
+        self.close_btn = QPushButton("✕", objectName="close", toolTip="退出程序")
+        self.close_btn.clicked.connect(self._quit_app)
+        set_btn, min_btn, close_btn = self.set_btn, self.min_btn, self.close_btn
         for b in (self.top_btn, set_btn, self.look_btn, min_btn, close_btn):
             bar.addWidget(b)
         lay.addLayout(bar)
@@ -2095,9 +2096,13 @@ class MainWindow(QWidget):
         io = d.get("ui_icon_opacity")
         ia = None if io is None else round(max(0.0, min(1.0, float(io))) * 255)
         if d.get("transparent_mode"):
-            # 一键透明模式：底板/按钮/图标全透明，文字颜色不变，悬停浮现
+            # 一键透明模式：底板/按钮/图标不可见，文字颜色不变；
+            # 纯图标按钮改显文字，样式与答案区文字一致
+            fg = _rgba(d.get("answer_text_color", "#f2f4f8"),
+                       round(max(0.0, min(1.0, float(
+                           d.get("answer_text_opacity", 1.0)))) * 255))
             self.setStyleSheet(_transparent_style(
-                d.get("ui_text_color", "#e8eaf0"), ta, ic, ia))
+                d.get("ui_text_color", "#e8eaf0"), ta, fg))
             return
         self.setStyleSheet(_panel_style(
             a, d.get("ui_bg_color", "#181b22"),
@@ -2266,12 +2271,22 @@ class MainWindow(QWidget):
         w.setText(self._strip_emoji(text)
                   if self.cfg.data.get("transparent_mode") else text)
 
+    # 纯图标按钮：透明模式下图标消失，改显文字（样式由 _transparent_style
+    # 按答案区文字着色）；退出时恢复图标
+    _ICON_WORDS = (("top_btn", "📌", "置顶"), ("set_btn", "⚙", "设置"),
+                   ("look_btn", "🎨", "外观"), ("min_btn", "—", "最小化"),
+                   ("close_btn", "✕", "退出"))
+
     def _apply_emoji_visibility(self):
         tp = bool(self.cfg.data.get("transparent_mode"))
         for w in self._emoji_widgets():
             full = w.property("full_text") or w.text()
             w.setProperty("full_text", full)
             w.setText(self._strip_emoji(full) if tp else full)
+        for attr, emoji, word in self._ICON_WORDS:
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setText(word if tp else emoji)
 
     def _lk_color_btn(self, key, default):
         btn = QPushButton()
