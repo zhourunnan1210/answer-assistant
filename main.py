@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 
 
 def _install_crash_log():
@@ -215,7 +215,9 @@ def _transparent_style(ui_text: str = "#e8eaf0", ui_text_alpha: int = 255,
             if ui_icon else t)
     sub = _rgba(ui_text, ui_text_alpha * 0.72)
     return _with_arrow(f"""
-QWidget#panel {{ background: transparent; border: none; border-radius: 12px; }}
+/* 底板画 rgba(0,0,0,1)：1/255 透明度肉眼不可见，但窗口不再"像素级穿透"，
+   透明模式下空白处依然可以拖动窗口（全透明像素在 Windows 上会穿透点击） */
+QWidget#panel {{ background: rgba(0, 0, 0, 1); border: none; border-radius: 12px; }}
 QLabel {{ color: {t}; }}
 QLabel#title {{ font-size: 14px; font-weight: bold; color: {t}; }}
 QLabel#status {{ color: {sub}; font-size: 12px; }}
@@ -1803,6 +1805,7 @@ class MainWindow(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(6)
         title = QLabel("🎯 答题助手", objectName="title")
+        self.title_lbl = title
         bar.addWidget(title)
         self.profile_bar = QComboBox()
         self.profile_bar.setMaximumWidth(150)
@@ -1926,6 +1929,7 @@ class MainWindow(QWidget):
         self.monitor_timer.timeout.connect(self._monitor_tick)
 
         self._update_region_btn()
+        self._apply_emoji_visibility()  # 透明模式持久化开启时，启动即去除 emoji
         if not self.cfg.region:
             self.status.setText("尚未框选区域，请先点击「▣ 框选区域」")
 
@@ -2241,6 +2245,33 @@ class MainWindow(QWidget):
         self.cfg.data["transparent_mode"] = bool(on)
         self._apply_panel_style()
         self._apply_answer_style()
+        self._apply_emoji_visibility()
+
+    # ---- 透明模式下去除按钮/标题中的 emoji 图标 ----
+    # emoji 与文字共用一个颜色，无法单独透明；透明模式下直接去掉图标前缀
+    # （等效"图标透明化"），退出时按 full_text 原样恢复。
+
+    @staticmethod
+    def _strip_emoji(s: str) -> str:
+        stripped = re.sub(r"^[^\w一-鿿＀-￿]+\s*", "", s or "")
+        return stripped or s
+
+    def _emoji_widgets(self):
+        return (self.title_lbl, self.region_btn, self.ask_btn,
+                self.interview_btn, self.qa_answer_btn, self.qa_btn)
+
+    def _set_btn_text(self, w, text):
+        """设置带 emoji 的按钮/标题文本：透明模式下自动去掉图标前缀。"""
+        w.setProperty("full_text", text)
+        w.setText(self._strip_emoji(text)
+                  if self.cfg.data.get("transparent_mode") else text)
+
+    def _apply_emoji_visibility(self):
+        tp = bool(self.cfg.data.get("transparent_mode"))
+        for w in self._emoji_widgets():
+            full = w.property("full_text") or w.text()
+            w.setProperty("full_text", full)
+            w.setText(self._strip_emoji(full) if tp else full)
 
     def _lk_color_btn(self, key, default):
         btn = QPushButton()
@@ -2448,7 +2479,7 @@ class MainWindow(QWidget):
                 "<span style='color:#8a93a6'>🎙 问答模式已开启，正在监听会议声音…<br>"
                 "识别到讲话会滚动显示在这里；听到问题后点下方按钮或按 "
                 "Ctrl+Alt+W 生成回答。</span>")
-            self.qa_btn.setText("🎙 问答中")
+            self._set_btn_text(self.qa_btn, "🎙 问答中")
             self.qa_answer_btn.setVisible(True)
             self._cap_thread = LoopbackCapture(
                 self._qa_bridge.utterance.emit, self._qa_bridge.cap_error.emit)
@@ -2465,7 +2496,7 @@ class MainWindow(QWidget):
             self._auto_answer_timer.stop()
             if self.interview_btn.isChecked():
                 self.interview_btn.setChecked(False)  # 面试模式依赖问答监听
-            self.qa_btn.setText("🎙 问答")
+            self._set_btn_text(self.qa_btn, "🎙 问答")
             self.qa_answer_btn.setVisible(False)
             self.status.setText("问答模式已关闭")
             self._sync_immersive_timer()
@@ -2490,7 +2521,7 @@ class MainWindow(QWidget):
             self._session_log = []  # 新一场面试，清空场次记录
             self._session_filtered = []
             self._recent_iv = []
-            self.interview_btn.setText("💼 面试中")
+            self._set_btn_text(self.interview_btn, "💼 面试中")
             if has_profile:
                 self._ans_append(
                     "<span style='color:#8a93a6'>💼 面试辅助已开启：同时监听面试官（扬声器）"
@@ -2512,7 +2543,7 @@ class MainWindow(QWidget):
             self._auto_answer_timer.stop()
             self._stop_mic()
             self._save_session()  # 持续优化：保存本场记录并生成复盘
-            self.interview_btn.setText("💼 面试")
+            self._set_btn_text(self.interview_btn, "💼 面试")
             if self.qa_btn.isChecked():
                 self.status.setText("面试辅助已关闭（问答监听仍在运行）")
             self._sync_immersive_timer()
@@ -3001,10 +3032,10 @@ class MainWindow(QWidget):
 
     def _update_region_btn(self):
         if self.cfg.region:
-            self.region_btn.setText("✕ 取消框选")
+            self._set_btn_text(self.region_btn, "✕ 取消框选")
             self.region_btn.setToolTip("清除已保存的题目区域，之后可重新框选")
         else:
-            self.region_btn.setText("▣ 框选区域")
+            self._set_btn_text(self.region_btn, "▣ 框选区域")
             self.region_btn.setToolTip("框选题目所在屏幕区域")
 
     def _region_btn_clicked(self):

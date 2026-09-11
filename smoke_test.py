@@ -782,7 +782,7 @@ assert "self._iv_profile_available()" in _qa_src
 print("✓ v2.3：图标颜色定制/外观面板重做/问答按钮下线就位")
 
 # ================= v2.4：面板防压缩重构 + 一键透明模式 =================
-assert app_main.APP_VERSION == "2.4"
+assert app_main.APP_VERSION
 # 面板外层为滚动区（小窗口可滚动而不是被压缩），滑杆有最小宽度
 assert isinstance(win.look_panel, app_main.QScrollArea)
 assert win._lk["ui_bg_opacity"].minimumWidth() == 64
@@ -807,6 +807,35 @@ assert not win._lk_transparent.isChecked()
 # 设置页快照含 transparent_mode
 assert "transparent_mode" in dlg._snapshot()
 print("✓ v2.4：面板防压缩重构/一键透明模式就位")
+
+# ================= v2.5：透明模式可拖动 + 按钮 emoji 同步去除 =================
+assert app_main.APP_VERSION == "2.5"
+# 拖动修复：底板画 1/255 透明度的近透明色，窗口不再像素级穿透
+assert "rgba(0, 0, 0, 1)" in app_main._transparent_style()
+# emoji 剥离工具
+assert app_main.MainWindow._strip_emoji("▣ 框选区域") == "框选区域"
+assert app_main.MainWindow._strip_emoji("识别本题") == "识别本题"
+assert app_main.MainWindow._strip_emoji("—") == "—"  # 剥光则保留原文
+assert app_main.MainWindow._strip_emoji(
+    "💬 回答刚才的问题（Ctrl+Alt+W）") == "回答刚才的问题（Ctrl+Alt+W）"
+# 开启透明：标题/按钮 emoji 去除，文字保留
+win._lk_transparent.setChecked(True)
+assert win.ask_btn.text() == "识别本题"
+assert win.title_lbl.text() == "答题助手"
+assert win.qa_answer_btn.text() == "回答刚才的问题（Ctrl+Alt+W）"
+# 透明模式下动态文本也自动剥离（框选状态切换）
+win.cfg.data["region"] = [0, 0, 100, 100]
+win._update_region_btn()
+assert win.region_btn.text() == "取消框选"
+win.cfg.data["region"] = None
+win._update_region_btn()
+assert win.region_btn.text() == "框选区域"
+# 关闭透明：emoji 原样恢复
+win._lk_transparent.setChecked(False)
+assert win.ask_btn.text() == "🔍 识别本题"
+assert win.title_lbl.text() == "🎯 答题助手"
+assert win.region_btn.text() == "▣ 框选区域"
+print("✓ v2.5：透明模式可拖动/按钮 emoji 同步去除就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
