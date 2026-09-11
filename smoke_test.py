@@ -180,14 +180,19 @@ assert hasattr(win, "interview_btn") and hasattr(dlg, "interview_prompt")
 assert hasattr(dlg, "fixed_editor") and hasattr(dlg, "flex_list"), "资料库 UI 缺失"
 assert hasattr(dlg, "_upload_raw") and hasattr(dlg, "_gen_fixed")
 assert hasattr(dlg, "_gen_flex") and hasattr(dlg, "_edit_flex")
-# 未加载简历时面试开关应被拒绝
+# v2.3：未配置资料库时面试降级为纯问答（不阻塞开启、不注入资料）
 win.cfg.data["resume_text"] = ""
 win.interview_btn.setChecked(True)
-assert not win.interview_btn.isChecked(), "无简历时面试模式不应开启"
+assert win.interview_btn.isChecked() and win.qa_btn.isChecked(), \
+    "无资料库时面试应降级为纯问答开启"
+assert not win._iv_profile_available()
+win.interview_btn.setChecked(False)
+win.qa_btn.setChecked(False)
 win.cfg.data["resume_text"] = "张三，3 年经验"
 win.interview_btn.setChecked(True)
 assert win.interview_btn.isChecked() and win.qa_btn.isChecked(), \
     "面试模式应自动带动问答监听开启"
+assert win._iv_profile_available()
 win.interview_btn.setChecked(False)
 win.qa_btn.setChecked(False)
 win.cfg.data["resume_text"] = ""
@@ -687,7 +692,7 @@ assert _sys.excepthook is not _sys.__excepthook__
 print("✓ v2.1.1：保存防护/预设即时刷新/版本可见/异常日志就位")
 
 # ================= v2.2：秒关视觉优化 + 提示精简 + 主窗口外观实时面板 =================
-assert app_main.APP_VERSION == "2.2"
+assert app_main.APP_VERSION
 # _quit_app：先隐藏窗口与托盘（视觉秒关），再做收尾
 _qs = _insp21.getsource(app_main.MainWindow._quit_app)
 assert _qs.index("self.hide()") < _qs.index("self._stop_capture()")
@@ -735,6 +740,46 @@ win.cfg.data["font_size"] = 14
 assert "look_btn.setChecked(False)" in _insp21.getsource(
     app_main.MainWindow._set_immersive_ui)
 print("✓ v2.2：秒关视觉优化/提示精简/外观实时调整面板就位")
+
+# ================= v2.3：图标颜色定制 + 外观面板重做 + 问答按钮下线 =================
+assert app_main.APP_VERSION == "2.3"
+# _panel_style：图标颜色独立参数；未设置时跟随 UI 字体（85% 透明度）
+_st_icon = app_main._panel_style(205, "#181b22", "#e8eaf0", 255,
+                                 "#ff0000", 128)
+assert "rgba(255, 0, 0, 128)" in _st_icon
+assert "rgba(232, 234, 240, 216)" in app_main._panel_style(205)  # 255*0.85
+# _apply_panel_style 读取图标键
+win.cfg.data.update({"ui_icon_color": "#00ff00", "ui_icon_opacity": 0.5})
+win._apply_panel_style()
+assert "rgba(0, 255, 0, 128)" in win.styleSheet()
+win.cfg.data.pop("ui_icon_color"); win.cfg.data.pop("ui_icon_opacity")
+win._apply_panel_style()
+assert "rgba(0, 255, 0, 128)" not in win.styleSheet()  # 恢复跟随字体
+# 外观面板：图标行 + 百分比标签 + 恢复默认
+assert "ui_icon_color" in win._lk  # 颜色按钮
+assert "ui_icon_opacity" in win._lk and "ui_icon_opacity" in win._lk_pct
+win.cfg.data["ui_bg_color"] = "#123456"
+win._lk_reset()
+assert win.cfg.data["ui_bg_color"] == "#181b22"
+assert "ui_icon_color" not in win.cfg.data  # 恢复为跟随字体
+assert win._lk["ui_icon_opacity"].value() == 85  # 同步后的默认展示
+assert "rgba(18, 52, 86" not in win.styleSheet()
+# 设置页：图标行入快照
+_snap23 = dlg._snapshot()
+assert "ui_icon_color" in _snap23 and "ui_icon_opacity" in _snap23
+# 问答按钮下线：未加入布局、不在沉浸式外壳列表；对象保留供面试复用
+assert win.qa_btn.parentWidget() is None
+assert win.qa_btn not in win._chrome
+_src23 = _insp21.getsource(app_main)
+assert "# ops.addWidget(self.qa_btn)" in _src23
+# 无资料库时面试降级为纯问答（不阻塞开启、不注入资料）
+assert "_iv_profile_available" in _src23
+_ti = _insp21.getsource(app_main.MainWindow._toggle_interview)
+assert "纯问答模式运行" in _ti
+assert "上传资料并生成固定文稿" not in _ti  # 不再阻塞开启
+_qa_src = _insp21.getsource(app_main.MainWindow._qa_answer)
+assert "self._iv_profile_available()" in _qa_src
+print("✓ v2.3：图标颜色定制/外观面板重做/问答按钮下线就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

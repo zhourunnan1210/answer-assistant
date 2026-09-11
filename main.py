@@ -20,7 +20,8 @@ from PySide6.QtGui import (QColor, QCursor, QFont, QGuiApplication, QIcon,
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDialog,
                                QComboBox,
                                QDialog, QDialogButtonBox, QFileDialog, QFrame,
-                               QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QFormLayout, QGridLayout, QHBoxLayout, QLabel,
+                               QLineEdit,
                                QListWidget, QMenu, QMessageBox, QInputDialog,
                                QPlainTextEdit, QPushButton, QRadioButton,
                                QSizeGrip, QSlider, QSpinBox, QSplitter,
@@ -29,7 +30,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 
 
 def _install_crash_log():
@@ -182,9 +183,11 @@ def _rgba(h: str, a, fallback="#e8eaf0") -> str:
 
 
 def _panel_style(ui_alpha: int = 205, ui_bg: str = "#181b22",
-                 ui_text: str = "#e8eaf0", ui_text_alpha: int = 255) -> str:
+                 ui_text: str = "#e8eaf0", ui_text_alpha: int = 255,
+                 ui_icon: str = None, ui_icon_alpha=None) -> str:
     """主面板样式。ui_alpha/ui_text_alpha 为 0~255 不透明度；
-    ui_bg 底板颜色、ui_text UI 字体颜色（标题/状态/图标按钮文字由此派生）。"""
+    ui_bg 底板颜色、ui_text UI 字体颜色（标题/状态/按钮文字由此派生）；
+    ui_icon 标题栏图标颜色，为 None 时跟随 UI 字体（85% 透明度）。"""
     head = PANEL_STYLE_HEAD.replace(
         "rgba(24, 27, 34, 205)", _rgba(ui_bg, ui_alpha, "#181b22"))
     t = _rgba(ui_text, ui_text_alpha)
@@ -194,8 +197,11 @@ def _panel_style(ui_alpha: int = 205, ui_bg: str = "#181b22",
         f"QLabel#title {{ font-size: 14px; font-weight: bold; color: {t}; }}")
     head = head.replace("color: #a6adbb",
                         f"color: {_rgba(ui_text, ui_text_alpha * 0.72)}")
-    head = head.replace("color: #cfd4de",
-                        f"color: {_rgba(ui_text, ui_text_alpha * 0.85)}")
+    if ui_icon:
+        icon = _rgba(ui_icon, 255 if ui_icon_alpha is None else ui_icon_alpha)
+    else:
+        icon = _rgba(ui_text, ui_text_alpha * 0.85)
+    head = head.replace("color: #cfd4de", f"color: {icon}")
     return _with_arrow(head)
 
 
@@ -1105,6 +1111,12 @@ class SettingsDialog(QDialog):
             "ui_text_color", "#e8eaf0", "ui_text_opacity", 1.0)
         form_gen.addRow("UI 字体", ui_text_row)
 
+        ui_icon_row, self.ui_icon_color_btn, self.ui_icon_op = _color_row(
+            "ui_icon_color", "#e8eaf0", "ui_icon_opacity", 0.85)
+        self.ui_icon_color_btn.setToolTip(
+            "标题栏图标（📌⚙🎨—✕）颜色；未设置过则跟随 UI 字体，点击可选择")
+        form_gen.addRow("UI 图标", ui_icon_row)
+
         ans_bg_row, self.answer_bg_color_btn, _ = _color_row(
             "answer_bg_color", "#ffffff")
         form_gen.addRow("答案区背景色", ans_bg_row)
@@ -1562,6 +1574,8 @@ class SettingsDialog(QDialog):
             "answer_bg_color": self.answer_bg_color_btn.property("color"),
             "answer_text_color": self.answer_text_color_btn.property("color"),
             "answer_text_opacity": self.answer_text_op.value() / 100,
+            "ui_icon_color": self.ui_icon_color_btn.property("color"),
+            "ui_icon_opacity": self.ui_icon_op.value() / 100,
             "immersive_mode": self.immersive.isChecked(),
             "qa_thinking": self.qa_thinking.isChecked(),
             "stealth_compat": self.stealth_compat.isChecked(),
@@ -1785,8 +1799,8 @@ class MainWindow(QWidget):
         self.qa_btn.setCheckable(True)
         self.qa_btn.toggled.connect(self._toggle_qa)
         self.interview_btn = QPushButton(
-            "💼 面试", toolTip="面试辅助模式：在问答监听的基础上，"
-            "生成回答时结合设置的「面试助手」分组中加载的简历内容")
+            "💼 面试", toolTip="面试辅助模式：监听会议声音（扬声器+麦克风），"
+            "结合设置中加载的资料库生成回答建议")
         self.interview_btn.setCheckable(True)
         self.interview_btn.toggled.connect(self._toggle_interview)
         # ---- 监控模式 / 自动模式暂时下线（按钮不显示，恢复时取消注释）----
@@ -1801,7 +1815,10 @@ class MainWindow(QWidget):
         self.auto_btn = None
         ops.addWidget(self.region_btn)
         ops.addWidget(self.ask_btn, stretch=1)
-        ops.addWidget(self.qa_btn)
+        # ---- 问答模式暂时下线：问答是面试的子集，按钮隐藏；
+        #      qa_btn 对象保留，面试模式开启时仍会程序化勾选它以复用底层监听，
+        #      恢复时取消下一行注释即可 ----
+        # ops.addWidget(self.qa_btn)
         ops.addWidget(self.interview_btn)
         # ops.addWidget(self.monitor_btn)
         # ops.addWidget(self.auto_btn)
@@ -1812,7 +1829,7 @@ class MainWindow(QWidget):
         lay.addLayout(ops)
         # qa_answer_btn 不进 _chrome：它的可见性由问答/面试开关单独管理
         self._chrome += [self.status, self.region_btn, self.ask_btn,
-                         self.qa_btn, self.interview_btn, grip]
+                         self.interview_btn, grip]
 
         # 沉浸式模式：轮询鼠标位置，自动隐藏/显示外壳 UI
         self._immersive_timer = QTimer(self)
@@ -1991,82 +2008,134 @@ class MainWindow(QWidget):
             f" color: {fg}; border: none; border-radius: 8px; padding: 6px;")
 
     def _apply_panel_style(self):
-        """UI 区域样式：底板颜色/不透明度 + UI 字体颜色/不透明度。"""
+        """UI 区域样式：底板颜色/不透明度 + UI 字体/图标颜色与不透明度。"""
         d = self.cfg.data
         a = round(max(0.0, min(1.0,
                 float(d.get("ui_bg_opacity", 0.80)))) * 255)
         ta = round(max(0.0, min(1.0,
                 float(d.get("ui_text_opacity", 1.0)))) * 255)
+        ic = d.get("ui_icon_color")   # None -> 图标跟随 UI 字体
+        io = d.get("ui_icon_opacity")
+        ia = None if io is None else round(max(0.0, min(1.0, float(io))) * 255)
         self.setStyleSheet(_panel_style(
             a, d.get("ui_bg_color", "#181b22"),
-            d.get("ui_text_color", "#e8eaf0"), ta))
+            d.get("ui_text_color", "#e8eaf0"), ta, ic, ia))
 
     # ---- 外观实时调整面板（主窗口 🎨 按钮） ----
 
     def _build_look_panel(self):
-        """内嵌在主窗口的外观调整小面板：改动立即生效，收起时统一保存。"""
-        frame = QFrame()
+        """内嵌外观面板：窗口 / 界面 UI / 答案区分组，色块+滑杆+数值，
+        改动立即生效，收起面板时统一保存。"""
+        frame = QFrame(objectName="lookPanel")
         frame.setStyleSheet(
-            "QFrame { background: rgba(255,255,255,14);"
-            " border: 1px solid rgba(255,255,255,36); border-radius: 8px; }")
-        form = QFormLayout(frame)
-        form.setContentsMargins(10, 8, 10, 8)
-        form.setSpacing(6)
+            "QFrame#lookPanel { background: rgba(255,255,255,10);"
+            " border: 1px solid rgba(255,255,255,30); border-radius: 10px; }"
+            "QLabel#lkHead { color: #c6cddb; font-size: 11px;"
+            " font-weight: bold; }"
+            "QLabel.lkSec { color: #7f96c8; font-size: 10px;"
+            " font-weight: bold; padding-top: 3px; }"
+            "QLabel.lkName { color: #c6cddb; font-size: 11px; }"
+            "QLabel.lkPct { color: #8f97a6; font-size: 10px; }"
+            "QPushButton.lkReset { background: transparent; border: none;"
+            " color: #7f96c8; font-size: 10px; padding: 1px 4px; }"
+            "QPushButton.lkReset:hover { color: #bcd4ff; }")
+        grid = QGridLayout(frame)
+        grid.setContentsMargins(10, 6, 10, 8)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
+        grid.setColumnStretch(2, 1)
         d = self.cfg.data
-        self._lk = {}  # key -> widget，便于同步
+        self._lk = {}      # key -> 控件，便于同步
+        self._lk_pct = {}  # key -> 百分比标签
+        r = 0
 
-        # 窗口不透明度
-        op = QSlider(Qt.Horizontal)
-        op.setRange(50, 100)
-        op.setValue(round(float(d.get("window_opacity", 0.92)) * 100))
-        op.valueChanged.connect(
-            lambda v: self._lk_apply("window_opacity", v / 100))
-        self._lk["window_opacity"] = op
-        form.addRow("窗口不透明度", self._lk_row(op))
+        head = QLabel("🎨 外观 · 实时预览", objectName="lkHead")
+        reset = QPushButton("恢复默认")
+        reset.setProperty("class", "lkReset")
+        reset.setToolTip("全部外观项恢复默认值（图标恢复为跟随 UI 字体）")
+        reset.clicked.connect(self._lk_reset)
+        grid.addWidget(head, r, 0, 1, 3)
+        grid.addWidget(reset, r, 3, Qt.AlignRight)
+        r += 1
 
-        # 答案字号
+        def sec(text):
+            nonlocal r
+            l = QLabel(text)
+            l.setProperty("class", "lkSec")
+            grid.addWidget(l, r, 0, 1, 4)
+            r += 1
+
+        def name_lbl(text):
+            l = QLabel(text)
+            l.setProperty("class", "lkName")
+            return l
+
+        def pct_lbl(v):
+            l = QLabel(f"{v}%")
+            l.setProperty("class", "lkPct")
+            l.setFixedWidth(30)
+            l.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            return l
+
+        def add_slider(key, val, vmin=0):
+            s = QSlider(Qt.Horizontal)
+            s.setRange(vmin, 100)
+            s.setValue(round(max(vmin / 100, min(1.0, val)) * 100))
+            p = pct_lbl(s.value())
+            s.valueChanged.connect(
+                lambda v, k=key, pl=p: (pl.setText(f"{v}%"),
+                                        self._lk_apply(k, v / 100)))
+            self._lk[key] = s
+            self._lk_pct[key] = p
+            return s, p
+
+        def slider_row(name, key, default, vmin=0):
+            nonlocal r
+            cur = d.get(key)
+            s, p = add_slider(key, default if cur is None else float(cur),
+                              vmin)
+            grid.addWidget(name_lbl(name), r, 0)
+            grid.addWidget(s, r, 2)
+            grid.addWidget(p, r, 3)
+            r += 1
+
+        def color_row(name, ckey, cdef, okey, odef):
+            nonlocal r
+            btn = self._lk_color_btn(ckey, cdef)
+            cur = d.get(okey)
+            s, p = add_slider(okey, odef if cur is None else float(cur))
+            grid.addWidget(name_lbl(name), r, 0)
+            grid.addWidget(btn, r, 1)
+            grid.addWidget(s, r, 2)
+            grid.addWidget(p, r, 3)
+            self._lk[ckey] = btn
+            r += 1
+
+        sec("窗口")
+        slider_row("不透明度", "window_opacity", 0.92, vmin=50)
+        sec("界面 UI")
+        color_row("底板", "ui_bg_color", "#181b22", "ui_bg_opacity", 0.80)
+        color_row("字体", "ui_text_color", "#e8eaf0", "ui_text_opacity", 1.0)
+        color_row("图标", "ui_icon_color", d.get("ui_text_color", "#e8eaf0"),
+                  "ui_icon_opacity", 0.85)
+        sec("答案区")
+        color_row("背景", "answer_bg_color", "#ffffff",
+                  "answer_bg_opacity", 0.05)
+        color_row("字体", "answer_text_color", "#f2f4f8",
+                  "answer_text_opacity", 1.0)
         fs = QSpinBox()
         fs.setRange(10, 28)
         fs.setSuffix(" px")
         fs.setValue(int(d.get("font_size", 14)))
         fs.valueChanged.connect(lambda v: self._lk_apply("font_size", int(v)))
+        grid.addWidget(name_lbl("字号"), r, 0)
+        grid.addWidget(fs, r, 2, Qt.AlignLeft)
         self._lk["font_size"] = fs
-        form.addRow("答案字号", fs)
-
-        # 四组 颜色+透明度
-        rows = [
-            ("UI 底板", "ui_bg_color", "#181b22", "ui_bg_opacity", 0.80),
-            ("UI 字体", "ui_text_color", "#e8eaf0", "ui_text_opacity", 1.0),
-            ("答案区背景", "answer_bg_color", "#ffffff",
-             "answer_bg_opacity", 0.05),
-            ("答案字体", "answer_text_color", "#f2f4f8",
-             "answer_text_opacity", 1.0),
-        ]
-        for label, ckey, cdef, okey, odef in rows:
-            btn = self._lk_color_btn(ckey, cdef)
-            s = QSlider(Qt.Horizontal)
-            s.setRange(0, 100)
-            s.setValue(round(max(0.0, min(1.0,
-                             float(d.get(okey, odef)))) * 100))
-            s.valueChanged.connect(
-                lambda v, k=okey: self._lk_apply(k, v / 100))
-            self._lk[ckey] = btn
-            self._lk[okey] = s
-            form.addRow(label, self._lk_row(btn, s))
         return frame
-
-    def _lk_row(self, *widgets):
-        w = QWidget()
-        row = QHBoxLayout(w)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
-        for x in widgets:
-            row.addWidget(x, stretch=1 if isinstance(x, QSlider) else 0)
-        return w
 
     def _lk_color_btn(self, key, default):
         btn = QPushButton()
-        btn.setFixedSize(46, 22)
+        btn.setFixedSize(34, 18)
         btn.setProperty("color", self.cfg.data.get(key) or default)
         btn.setToolTip("点击选择颜色（实时生效）")
 
@@ -2086,6 +2155,28 @@ class MainWindow(QWidget):
         btn.clicked.connect(pick)
         refresh()
         return btn
+
+    # 外观默认值（「恢复默认」与面板同步共用；图标为 None 表示跟随 UI 字体）
+    _LOOK_DEFAULTS = {"window_opacity": 0.92, "font_size": 14,
+                      "ui_bg_color": "#181b22", "ui_bg_opacity": 0.80,
+                      "ui_text_color": "#e8eaf0", "ui_text_opacity": 1.0,
+                      "ui_icon_color": None, "ui_icon_opacity": None,
+                      "answer_bg_color": "#ffffff", "answer_bg_opacity": 0.05,
+                      "answer_text_color": "#f2f4f8",
+                      "answer_text_opacity": 1.0}
+
+    def _lk_reset(self):
+        d = self.cfg.data
+        for k, v in self._LOOK_DEFAULTS.items():
+            if v is None:
+                d.pop(k, None)
+            else:
+                d[k] = v
+        if not self._stealth_compat:
+            self.setWindowOpacity(0.92)
+        self._apply_panel_style()
+        self._apply_answer_style()
+        self._sync_look_panel()
 
     def _lk_apply(self, key, value):
         """实时应用一项外观改动（不落盘，收起面板时统一保存）。"""
@@ -2112,20 +2203,22 @@ class MainWindow(QWidget):
         if not hasattr(self, "_lk"):
             return
         d = self.cfg.data
-        defaults = {"window_opacity": 0.92, "font_size": 14,
-                    "ui_bg_color": "#181b22", "ui_bg_opacity": 0.80,
-                    "ui_text_color": "#e8eaf0", "ui_text_opacity": 1.0,
-                    "answer_bg_color": "#ffffff", "answer_bg_opacity": 0.05,
-                    "answer_text_color": "#f2f4f8", "answer_text_opacity": 1.0}
+        defaults = dict(self._LOOK_DEFAULTS)
+        defaults["ui_icon_color"] = d.get("ui_text_color", "#e8eaf0")
+        defaults["ui_icon_opacity"] = 0.85
         for key, w in self._lk.items():
-            val = d.get(key, defaults[key])
+            val = d.get(key)
+            if val is None:
+                val = defaults[key]
             w.blockSignals(True)
             if isinstance(w, QSlider):
                 w.setValue(round(float(val) * 100))
+                if key in self._lk_pct:
+                    self._lk_pct[key].setText(f"{w.value()}%")
             elif isinstance(w, QSpinBox):
                 w.setValue(int(val))
             else:  # 颜色按钮
-                w.setProperty("color", val or defaults[key])
+                w.setProperty("color", val)
                 w.setStyleSheet(
                     f"background:{w.property('color')};"
                     "border:1px solid rgba(255,255,255,70);"
@@ -2261,16 +2354,17 @@ class MainWindow(QWidget):
             self.status.setText("问答模式已关闭")
             self._sync_immersive_timer()
 
+    def _iv_profile_available(self) -> bool:
+        """资料库是否可用（固定文稿或旧版简历文本）。"""
+        import profile_store as ps
+        return bool(ps.load_fixed()
+                    or (self.cfg.data.get("resume_text") or "").strip())
+
     def _toggle_interview(self, on: bool):
-        """面试辅助：双通道监听 + 资料库上下文 + 对话记录。"""
+        """面试辅助：双通道监听 + 资料库上下文 + 对话记录。
+        未配置资料库时不阻塞开启——降级为纯问答（不注入个人资料）。"""
         if on:
-            import profile_store as ps
-            has_profile = bool(ps.load_fixed()
-                               or (self.cfg.data.get("resume_text") or "").strip())
-            if not has_profile:
-                self.status.setText("请先在 ⚙设置 的「面试助手」分组中上传资料并生成固定文稿")
-                self.interview_btn.setChecked(False)
-                return
+            has_profile = self._iv_profile_available()
             if not self.qa_btn.isChecked():
                 self.qa_btn.setChecked(True)   # 自动开启问答监听
                 if not self.qa_btn.isChecked():  # 问答开启失败（如 ASR 未就绪）
@@ -2281,9 +2375,15 @@ class MainWindow(QWidget):
             self._session_filtered = []
             self._recent_iv = []
             self.interview_btn.setText("💼 面试中")
-            self._ans_append(
-                "<span style='color:#8a93a6'>💼 面试辅助已开启：同时监听面试官（扬声器）"
-                "和你（麦克风），回答将结合资料库与对话上下文生成。</span>")
+            if has_profile:
+                self._ans_append(
+                    "<span style='color:#8a93a6'>💼 面试辅助已开启：同时监听面试官（扬声器）"
+                    "和你（麦克风），回答将结合资料库与对话上下文生成。</span>")
+            else:
+                self._ans_append(
+                    "<span style='color:#8a93a6'>💼 监听已开启（未配置资料库，"
+                    "以纯问答模式运行；在 ⚙设置「面试助手」上传资料后回答将"
+                    "结合个人经历）。</span>")
             # 开启麦克风采集（默认开启；失败仅提示，不影响面试模式）
             if self._mic_thread is None:
                 self._mic_thread = MicCapture(
@@ -2592,7 +2692,7 @@ class MainWindow(QWidget):
         对话记录，不进入问题，也不阻塞提交——面试官问完后我可以立刻口头回应，
         与助手生成回答互不冲突。每次作答先清空答案区，只保留当前问题 + 回答。"""
         if not self.qa_btn.isChecked():
-            self.status.setText("请先开启「🎙 问答」模式")
+            self.status.setText("请先开启「💼 面试」模式")
             return
         if self._qa_thread is not None and self._qa_thread.isRunning():
             self.status.setText("正在生成回答，请稍候…")
@@ -2609,7 +2709,7 @@ class MainWindow(QWidget):
         self._me_speaking_shown = False
         self._ans_append(f"<b>❓ {html.escape(question[:120])}</b>")
         snap = dict(self.cfg.data)
-        if self.interview_btn.isChecked():
+        if self.interview_btn.isChecked() and self._iv_profile_available():
             self.status.setText("正在结合资料库与对话上下文生成回答…")
             convo = self._convo_for_llm(pending)
             fn = lambda: ask_interview(snap, question, convo=convo)  # noqa: E731
@@ -2627,7 +2727,8 @@ class MainWindow(QWidget):
                 f"<span style='color:#e07878'>回答失败：{html.escape(err)}</span>")
         else:
             # 「听不清请重问」类回复多半是噪音误触发：自动用上一个完整问题重试一次
-            if (self.interview_btn.isChecked() and not self._unclear_retried
+            if (self.interview_btn.isChecked() and self._iv_profile_available()
+                    and not self._unclear_retried
                     and re.search(r"没听清|听不清|无法听清|请重复|再重复|重复一遍", text)):
                 prev = self._last_complete_question()
                 if prev:

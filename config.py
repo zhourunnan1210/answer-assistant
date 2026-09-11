@@ -159,6 +159,8 @@ DEFAULTS = {
     "ui_bg_color": "#181b22",            # UI 底板颜色
     "ui_text_color": "#e8eaf0",          # UI 字体颜色（标题/状态/按钮文字统一派生）
     "ui_text_opacity": 1.0,              # UI 字体不透明度 0~1
+    "ui_icon_color": "#e8eaf0",          # UI 图标颜色（标题栏/操作按钮的手绘图标）
+    "ui_icon_opacity": 1.0,              # UI 图标不透明度 0~1
     "answer_bg_color": "#ffffff",        # 答案区背景颜色
     "answer_text_color": "#f2f4f8",      # 答案字体颜色
     "answer_text_opacity": 1.0,          # 答案字体不透明度 0~1
