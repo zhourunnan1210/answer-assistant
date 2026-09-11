@@ -29,3 +29,4 @@ installer/
 
 # 构建工具（Inno Setup 安装器太大不入库，语言文件保留跟踪）
 tools/innosetup-*.exe
+crash.log
