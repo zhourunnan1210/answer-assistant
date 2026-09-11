@@ -742,7 +742,7 @@ assert "look_btn.setChecked(False)" in _insp21.getsource(
 print("✓ v2.2：秒关视觉优化/提示精简/外观实时调整面板就位")
 
 # ================= v2.3：图标颜色定制 + 外观面板重做 + 问答按钮下线 =================
-assert app_main.APP_VERSION == "2.3"
+assert app_main.APP_VERSION
 # _panel_style：图标颜色独立参数；未设置时跟随 UI 字体（85% 透明度）
 _st_icon = app_main._panel_style(205, "#181b22", "#e8eaf0", 255,
                                  "#ff0000", 128)
@@ -780,6 +780,33 @@ assert "上传资料并生成固定文稿" not in _ti  # 不再阻塞开启
 _qa_src = _insp21.getsource(app_main.MainWindow._qa_answer)
 assert "self._iv_profile_available()" in _qa_src
 print("✓ v2.3：图标颜色定制/外观面板重做/问答按钮下线就位")
+
+# ================= v2.4：面板防压缩重构 + 一键透明模式 =================
+assert app_main.APP_VERSION == "2.4"
+# 面板外层为滚动区（小窗口可滚动而不是被压缩），滑杆有最小宽度
+assert isinstance(win.look_panel, app_main.QScrollArea)
+assert win._lk["ui_bg_opacity"].minimumWidth() == 64
+# 一键透明模式：样式生成器
+_st_tp = app_main._transparent_style("#e8eaf0", 255)
+assert "background: transparent" in _st_tp
+assert "color: rgba(0, 0, 0, 0)" in _st_tp  # 图标平时隐形
+# 开关实时切换：面板/答案区背景透明，文字颜色保留
+win._lk_transparent.setChecked(True)
+assert win.cfg.data["transparent_mode"] is True
+assert "background: transparent" in win.styleSheet()
+assert "background-color: transparent" in win.answer.styleSheet()
+assert "color: rgba(232, 234, 240" in win.styleSheet()  # 字体颜色不变
+win._lk_transparent.setChecked(False)
+assert win.cfg.data["transparent_mode"] is False
+assert "rgba(24, 27, 34, 204)" in win.styleSheet()  # 恢复默认底板
+# 恢复默认会同时退出透明模式
+win._lk_transparent.setChecked(True)
+win._lk_reset()
+assert win.cfg.data["transparent_mode"] is False
+assert not win._lk_transparent.isChecked()
+# 设置页快照含 transparent_mode
+assert "transparent_mode" in dlg._snapshot()
+print("✓ v2.4：面板防压缩重构/一键透明模式就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

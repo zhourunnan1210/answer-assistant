@@ -1,0 +1,30 @@
+
+[2026-09-11 18:03:02] Traceback (most recent call last):
+  File "C:\Users\Admin\Desktop\就业\答题助手\smoke_test.py", line 801, in <module>
+    assert "rgba(24, 27, 34, 205)" in win.styleSheet()  # 恢复默认底板
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+[2026-09-11 18:03:17] Traceback (most recent call last):
+  File "C:\Users\Admin\Desktop\就业\答题助手\smoke_test.py", line 801, in <module>
+    assert "rgba(24, 27, 34, 205)" in win.styleSheet()  # 恢复默认底板
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+[2026-09-11 18:03:43] Traceback (most recent call last):
+  File "C:\Users\Admin\Desktop\就业\答题助手\smoke_test.py", line 801, in <module>
+    assert "rgba(24, 27, 34, 205)" in win.styleSheet()  # 恢复默认底板
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+[2026-09-11 18:04:11] Traceback (most recent call last):
+  File "C:\Users\Admin\Desktop\就业\答题助手\smoke_test.py", line 801, in <module>
+    assert "rgba(24, 27, 34, 205)" in win.styleSheet()  # 恢复默认底板
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+[2026-09-11 18:05:50] Traceback (most recent call last):
+  File "C:\Users\Admin\Desktop\就业\答题助手\smoke_test.py", line 801, in <module>
+    assert "rgba(24, 27, 34, 205)" in win.styleSheet()  # 恢复默认底板
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

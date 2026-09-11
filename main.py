@@ -24,13 +24,14 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
                                QLineEdit,
                                QListWidget, QMenu, QMessageBox, QInputDialog,
                                QPlainTextEdit, QPushButton, QRadioButton,
+                               QScrollArea,
                                QSizeGrip, QSlider, QSpinBox, QSplitter,
                                QStackedWidget, QSystemTrayIcon, QTextBrowser,
                                QTextEdit, QVBoxLayout, QWidget)
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 
 
 def _install_crash_log():
@@ -203,6 +204,63 @@ def _panel_style(ui_alpha: int = 205, ui_bg: str = "#181b22",
         icon = _rgba(ui_text, ui_text_alpha * 0.85)
     head = head.replace("color: #cfd4de", f"color: {icon}")
     return _with_arrow(head)
+
+
+def _transparent_style(ui_text: str = "#e8eaf0", ui_text_alpha: int = 255,
+                       ui_icon: str = None, ui_icon_alpha=None) -> str:
+    """一键透明模式：底板/按钮背景/图标全部透明化，**文字颜色保持不变**；
+    图标平时隐形，鼠标悬停时浮现，置顶等激活态保持可见。"""
+    t = _rgba(ui_text, ui_text_alpha)
+    icon = (_rgba(ui_icon, 255 if ui_icon_alpha is None else ui_icon_alpha)
+            if ui_icon else t)
+    sub = _rgba(ui_text, ui_text_alpha * 0.72)
+    return _with_arrow(f"""
+QWidget#panel {{ background: transparent; border: none; border-radius: 12px; }}
+QLabel {{ color: {t}; }}
+QLabel#title {{ font-size: 14px; font-weight: bold; color: {t}; }}
+QLabel#status {{ color: {sub}; font-size: 12px; }}
+QPushButton {{
+    background: transparent; color: {t};
+    border: 1px solid transparent;
+    border-radius: 6px; padding: 5px 10px; font-size: 12px;
+}}
+QPushButton:hover {{ background: rgba(255, 255, 255, 30); }}
+QPushButton:checked {{ background: rgba(255, 255, 255, 26); color: {t}; }}
+QPushButton:disabled {{ color: #777; }}
+QPushButton#primary {{ background: transparent; color: {t}; font-weight: bold; }}
+QPushButton#primary:hover {{ background: rgba(255, 255, 255, 30); }}
+QPushButton#icon {{
+    background: transparent; border: 1px solid transparent;
+    border-radius: 6px; padding: 4px 8px; font-size: 13px;
+    color: rgba(0, 0, 0, 0);
+}}
+QPushButton#icon:hover {{ background: rgba(255, 255, 255, 30); color: {icon}; }}
+QPushButton#icon:checked {{
+    background: rgba(255, 255, 255, 26); color: {icon};
+    border: 1px solid rgba(255, 255, 255, 40);
+}}
+QPushButton#close:hover {{ background: rgba(224, 78, 78, 210); color: #ffffff; }}
+QTextEdit {{
+    background: transparent; color: #f2f4f8; border: none;
+    border-radius: 8px; font-size: 13px; padding: 6px;
+}}
+QComboBox {{
+    background: transparent; color: {t};
+    border: 1px solid transparent;
+    border-radius: 6px; padding: 3px 8px; font-size: 12px;
+}}
+QComboBox:hover {{ background: rgba(255, 255, 255, 30); }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox QAbstractItemView {{
+    background-color: #262a33; color: #e8eaf0;
+    selection-background-color: #4a82f0;
+    border: 1px solid rgba(255, 255, 255, 45);
+}}
+QToolTip {{
+    background-color: #262a33; color: #e8eaf0;
+    border: 1px solid rgba(255, 255, 255, 45); padding: 4px;
+}}
+""")
 
 
 # ------------------------------------------------------------------ 设置对话框
@@ -1125,6 +1183,16 @@ class SettingsDialog(QDialog):
             "answer_text_color", "#f2f4f8", "answer_text_opacity", 1.0)
         form_gen.addRow("答案字体", ans_text_row)
 
+        self.transparent_mode = QCheckBox(
+            "一键透明模式（底板/按钮/图标全透明，文字颜色不变）")
+        self.transparent_mode.setToolTip(
+            "开启后：窗口底板、按钮背景、标题栏图标全部透明化，\n"
+            "只有文字可见；图标在鼠标悬停时浮现。\n"
+            "与上方颜色/透明度设置独立，随时可切回。")
+        self.transparent_mode.setChecked(
+            bool(cfg.data.get("transparent_mode", False)))
+        form_gen.addRow("透明模式", self.transparent_mode)
+
         self.immersive = QCheckBox("沉浸式模式（问答/面试时）")
         self.immersive.setToolTip(
             "开启后，在问答/面试模式下：\n"
@@ -1576,6 +1644,7 @@ class SettingsDialog(QDialog):
             "answer_text_opacity": self.answer_text_op.value() / 100,
             "ui_icon_color": self.ui_icon_color_btn.property("color"),
             "ui_icon_opacity": self.ui_icon_op.value() / 100,
+            "transparent_mode": self.transparent_mode.isChecked(),
             "immersive_mode": self.immersive.isChecked(),
             "qa_thinking": self.qa_thinking.isChecked(),
             "stealth_compat": self.stealth_compat.isChecked(),
@@ -1998,9 +2067,13 @@ class MainWindow(QWidget):
         """答案区样式：字号 + 背景颜色/不透明度 + 字体颜色/不透明度。"""
         n = int(self.cfg.data.get("font_size", 14))
         d = self.cfg.data
-        bg = _rgba(d.get("answer_bg_color", "#ffffff"),
-                   round(max(0.0, min(1.0, float(d.get("answer_bg_opacity", 0.05)))) * 255),
-                   "#ffffff")
+        if d.get("transparent_mode"):
+            bg = "transparent"  # 一键透明模式：答案区背景同步透明
+        else:
+            bg = _rgba(d.get("answer_bg_color", "#ffffff"),
+                       round(max(0.0, min(1.0, float(
+                           d.get("answer_bg_opacity", 0.05)))) * 255),
+                       "#ffffff")
         fg = _rgba(d.get("answer_text_color", "#f2f4f8"),
                    round(max(0.0, min(1.0, float(d.get("answer_text_opacity", 1.0)))) * 255))
         self.answer.setStyleSheet(
@@ -2017,6 +2090,11 @@ class MainWindow(QWidget):
         ic = d.get("ui_icon_color")   # None -> 图标跟随 UI 字体
         io = d.get("ui_icon_opacity")
         ia = None if io is None else round(max(0.0, min(1.0, float(io))) * 255)
+        if d.get("transparent_mode"):
+            # 一键透明模式：底板/按钮/图标全透明，文字颜色不变，悬停浮现
+            self.setStyleSheet(_transparent_style(
+                d.get("ui_text_color", "#e8eaf0"), ta, ic, ia))
+            return
         self.setStyleSheet(_panel_style(
             a, d.get("ui_bg_color", "#181b22"),
             d.get("ui_text_color", "#e8eaf0"), ta, ic, ia))
@@ -2025,7 +2103,8 @@ class MainWindow(QWidget):
 
     def _build_look_panel(self):
         """内嵌外观面板：窗口 / 界面 UI / 答案区分组，色块+滑杆+数值，
-        改动立即生效，收起面板时统一保存。"""
+        改动立即生效，收起面板时统一保存。
+        外层套滚动区：主窗口尺寸很小时面板可滚动而不是被压缩消失。"""
         frame = QFrame(objectName="lookPanel")
         frame.setStyleSheet(
             "QFrame#lookPanel { background: rgba(255,255,255,10);"
@@ -2036,9 +2115,14 @@ class MainWindow(QWidget):
             " font-weight: bold; padding-top: 3px; }"
             "QLabel.lkName { color: #c6cddb; font-size: 11px; }"
             "QLabel.lkPct { color: #8f97a6; font-size: 10px; }"
-            "QPushButton.lkReset { background: transparent; border: none;"
-            " color: #7f96c8; font-size: 10px; padding: 1px 4px; }"
-            "QPushButton.lkReset:hover { color: #bcd4ff; }")
+            "QPushButton.lkTool { background: transparent;"
+            " border: 1px solid rgba(127,150,200,60); border-radius: 4px;"
+            " color: #7f96c8; font-size: 10px; padding: 1px 6px; }"
+            "QPushButton.lkTool:hover { color: #bcd4ff;"
+            " border-color: rgba(188,212,255,120); }"
+            "QPushButton.lkTool:checked { color: #bcd4ff;"
+            " background: rgba(90,150,250,50);"
+            " border-color: rgba(120,170,255,110); }")
         grid = QGridLayout(frame)
         grid.setContentsMargins(10, 6, 10, 8)
         grid.setHorizontalSpacing(8)
@@ -2050,11 +2134,20 @@ class MainWindow(QWidget):
         r = 0
 
         head = QLabel("🎨 外观 · 实时预览", objectName="lkHead")
+        self._lk_transparent = QPushButton("👻 一键透明")
+        self._lk_transparent.setProperty("class", "lkTool")
+        self._lk_transparent.setCheckable(True)
+        self._lk_transparent.setChecked(bool(d.get("transparent_mode")))
+        self._lk_transparent.setToolTip(
+            "一键透明模式：窗口底板、按钮、图标全部透明化，"
+            "文字颜色不变；图标悬停时浮现。再点一次恢复原样")
+        self._lk_transparent.toggled.connect(self._toggle_transparent)
         reset = QPushButton("恢复默认")
-        reset.setProperty("class", "lkReset")
+        reset.setProperty("class", "lkTool")
         reset.setToolTip("全部外观项恢复默认值（图标恢复为跟随 UI 字体）")
         reset.clicked.connect(self._lk_reset)
-        grid.addWidget(head, r, 0, 1, 3)
+        grid.addWidget(head, r, 0, 1, 2)
+        grid.addWidget(self._lk_transparent, r, 2, Qt.AlignRight)
         grid.addWidget(reset, r, 3, Qt.AlignRight)
         r += 1
 
@@ -2080,6 +2173,7 @@ class MainWindow(QWidget):
         def add_slider(key, val, vmin=0):
             s = QSlider(Qt.Horizontal)
             s.setRange(vmin, 100)
+            s.setMinimumWidth(64)  # 小窗口下滑杆保持可用，不被压没
             s.setValue(round(max(vmin / 100, min(1.0, val)) * 100))
             p = pct_lbl(s.value())
             s.valueChanged.connect(
@@ -2131,7 +2225,22 @@ class MainWindow(QWidget):
         grid.addWidget(name_lbl("字号"), r, 0)
         grid.addWidget(fs, r, 2, Qt.AlignLeft)
         self._lk["font_size"] = fs
-        return frame
+        # 外层滚动区：主窗口很小时面板改为滚动，而不是被压缩消失
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setMaximumHeight(246)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        scroll.setWidget(frame)
+        return scroll
+
+    def _toggle_transparent(self, on):
+        """一键透明模式：底板/按钮/图标全透明（文字颜色不变），实时切换。"""
+        self.cfg.data["transparent_mode"] = bool(on)
+        self._apply_panel_style()
+        self._apply_answer_style()
 
     def _lk_color_btn(self, key, default):
         btn = QPushButton()
@@ -2172,6 +2281,7 @@ class MainWindow(QWidget):
                 d.pop(k, None)
             else:
                 d[k] = v
+        d["transparent_mode"] = False  # 默认非透明
         if not self._stealth_compat:
             self.setWindowOpacity(0.92)
         self._apply_panel_style()
@@ -2195,6 +2305,9 @@ class MainWindow(QWidget):
         self.look_panel.setVisible(on)
         if on:
             self._sync_look_panel()
+            # 窗口太矮时自动撑高，避免面板把答案区挤没/自身被压缩
+            if self.height() < 480:
+                self.resize(self.width(), 480)
         else:
             self.cfg.save()  # 收起时统一落盘
 
@@ -2203,6 +2316,9 @@ class MainWindow(QWidget):
         if not hasattr(self, "_lk"):
             return
         d = self.cfg.data
+        self._lk_transparent.blockSignals(True)
+        self._lk_transparent.setChecked(bool(d.get("transparent_mode")))
+        self._lk_transparent.blockSignals(False)
         defaults = dict(self._LOOK_DEFAULTS)
         defaults["ui_icon_color"] = d.get("ui_text_color", "#e8eaf0")
         defaults["ui_icon_opacity"] = 0.85
