@@ -809,8 +809,8 @@ print("✓ v2.4：面板防压缩重构/一键透明模式就位")
 
 # ================= v2.5：透明模式可拖动 + 按钮 emoji 同步去除 =================
 assert app_main.APP_VERSION
-# 拖动修复：底板画 1/255 透明度的近透明色，窗口不再像素级穿透
-assert "rgba(0, 0, 0, 1)" in app_main._transparent_style()
+# 拖动修复：v2.5 的 1/255 底板方案在 v2.6 被伪透明背景取代（见 v2.6 节）
+assert "background: transparent" in app_main._transparent_style()
 # emoji 剥离工具
 assert app_main.MainWindow._strip_emoji("▣ 框选区域") == "框选区域"
 assert app_main.MainWindow._strip_emoji("识别本题") == "识别本题"
@@ -837,7 +837,7 @@ assert win.region_btn.text() == "▣ 框选区域"
 print("✓ v2.5：透明模式可拖动/按钮 emoji 同步去除就位")
 
 # ================= v2.5.1：纯图标按钮透明模式改显文字（答案区文字样式） =================
-assert app_main.APP_VERSION == "2.5.1"
+assert app_main.APP_VERSION
 # 图标按钮文字色与答案区文字一致（answer_fg 参数化）
 _st_ic = app_main._transparent_style("#e8eaf0", 255, "rgba(1, 2, 3, 255)")
 assert "color: rgba(1, 2, 3, 255)" in _st_ic
@@ -860,6 +860,28 @@ for attr, emoji in (("top_btn", "📌"), ("set_btn", "⚙"), ("look_btn", "🎨"
 win.cfg.data.update({"answer_text_color": "#f2f4f8"})
 win._apply_panel_style()
 print("✓ v2.5.1：纯图标按钮透明模式改显文字就位")
+
+# ================= v2.6：伪透明背景（截窗口后方画面做背景，修复黑底） =================
+assert app_main.APP_VERSION == "2.6"
+# 本环境 Qt 半透明/DWM 玻璃均渲染黑底（已实测），透明模式走伪透明：
+# paintEvent 绘制截取到的窗口后方画面作为背景
+for _m in ("paintEvent", "moveEvent", "resizeEvent", "_update_transparent_bg"):
+    assert _m in app_main.MainWindow.__dict__, _m
+win.show()
+QApplication.processEvents()
+win._lk_transparent.setChecked(True)
+QApplication.processEvents()
+assert win._tp_timer.isActive()
+assert win._tp_bg is not None and not win._tp_bg.isNull()  # 背景已截取
+_g = win.frameGeometry()
+assert abs(win._tp_bg.width() / win._tp_bg.devicePixelRatio()
+           - _g.width()) < 4  # 背景尺寸≈窗口尺寸
+win.move(max(0, win.x() - 3), win.y())  # moveEvent 触发即时刷新
+QApplication.processEvents()
+assert win._tp_bg is not None
+win._lk_transparent.setChecked(False)
+assert not win._tp_timer.isActive() and win._tp_bg is None
+print("✓ v2.6：伪透明背景（截窗口后方画面）就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

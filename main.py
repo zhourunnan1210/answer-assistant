@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.6"
 
 
 def _install_crash_log():
@@ -214,9 +214,9 @@ def _transparent_style(ui_text: str = "#e8eaf0", ui_text_alpha: int = 255,
     t = _rgba(ui_text, ui_text_alpha)
     sub = _rgba(ui_text, ui_text_alpha * 0.72)
     return _with_arrow(f"""
-/* 底板画 rgba(0,0,0,1)：1/255 透明度肉眼不可见，但窗口不再"像素级穿透"，
-   透明模式下空白处依然可以拖动窗口（全透明像素在 Windows 上会穿透点击） */
-QWidget#panel {{ background: rgba(0, 0, 0, 1); border: none; border-radius: 12px; }}
+/* 底板全透明：窗口背景由伪透明机制绘制（_tp_bg 截取窗口后方画面，
+   paintEvent 画在底层，天然不透明 → 可拖动、不穿透、截图隐身不受影响） */
+QWidget#panel {{ background: transparent; border: none; border-radius: 12px; }}
 QLabel {{ color: {t}; }}
 QLabel#title {{ font-size: 14px; font-weight: bold; color: {t}; }}
 QLabel#status {{ color: {sub}; font-size: 12px; }}
@@ -1779,6 +1779,12 @@ class MainWindow(QWidget):
         # Win10 2004 兼容隐身：分层透明窗口会导致 SetWindowDisplayAffinity
         # 失效（共享画面可见/黑块），兼容模式下使用普通不透明窗口
         self._stealth_compat = bool(self.cfg.data.get("stealth_compat", False))
+        # 透明模式伪透明背景（必须在 __init__ 的 resize() 之前初始化：
+        # resize 会触发 resizeEvent，进而访问 _tp_timer）
+        self._tp_bg = None
+        self._tp_timer = QTimer(self)
+        self._tp_timer.setInterval(400)
+        self._tp_timer.timeout.connect(self._update_transparent_bg)
         if not self._stealth_compat:
             self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
@@ -1931,6 +1937,8 @@ class MainWindow(QWidget):
 
         self._update_region_btn()
         self._apply_emoji_visibility()  # 透明模式持久化开启时，启动即去除 emoji
+        if self.cfg.data.get("transparent_mode"):
+            self._tp_timer.start()  # 伪透明背景随窗口显示持续刷新
         if not self.cfg.region:
             self.status.setText("尚未框选区域，请先点击「▣ 框选区域」")
 
@@ -2246,11 +2254,56 @@ class MainWindow(QWidget):
         return scroll
 
     def _toggle_transparent(self, on):
-        """一键透明模式：底板/按钮/图标全透明（文字颜色不变），实时切换。"""
+        """一键透明模式：底板/按钮/图标不可见（文字颜色不变），实时切换。
+        纯透明效果 = 伪透明：截取窗口后方画面作为窗口背景（_tp_bg）。"""
         self.cfg.data["transparent_mode"] = bool(on)
         self._apply_panel_style()
         self._apply_answer_style()
         self._apply_emoji_visibility()
+        tp = getattr(self, "_tp_timer", None)  # 面板构造早于 _tp_timer 初始化
+        if on:
+            self._update_transparent_bg()
+            if tp is not None:
+                tp.start()
+        else:
+            if tp is not None:
+                tp.stop()
+            self._tp_bg = None
+            self.update()
+
+    # ---- 伪透明背景（透明模式专用） ----
+    # 为什么不用 Qt 半透明/DWM 玻璃：本环境（Qt6 + Win11 150% 缩放）逐像素
+    # alpha 渲染为纯黑（5 种窗口标志组合 + 玻璃帧均实测失败）；而 GDI 截图
+    # 对 WDA_EXCLUDEFROMCAPTURE 隐身窗口是"挖洞"（能看到下层内容），所以
+    # 截取窗口后方画面绘制为背景即可得到真实的纯透明视觉效果。
+
+    def _update_transparent_bg(self):
+        """截取窗口后方画面作为背景。隐身属性使截图自动挖掉本窗口。"""
+        if not self.cfg.data.get("transparent_mode") or self.isMinimized():
+            return
+        g = self.frameGeometry()
+        pix = grab_region({"x": g.x(), "y": g.y(),
+                           "w": g.width(), "h": g.height()})
+        if pix is not None:
+            self._tp_bg = pix
+            self.update()
+
+    def paintEvent(self, e):
+        if self._tp_bg is not None and self.cfg.data.get("transparent_mode"):
+            p = QPainter(self)
+            p.drawPixmap(0, 0, self.width(), self.height(), self._tp_bg)
+            p.end()
+        super().paintEvent(e)
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        if self._tp_timer.isActive():
+            self._update_transparent_bg()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._tp_timer.isActive():
+            self._update_transparent_bg()
 
     # ---- 透明模式下去除按钮/标题中的 emoji 图标 ----
     # emoji 与文字共用一个颜色，无法单独透明；透明模式下直接去掉图标前缀
@@ -2328,6 +2381,8 @@ class MainWindow(QWidget):
             else:
                 d[k] = v
         d["transparent_mode"] = False  # 默认非透明
+        self._tp_timer.stop()
+        self._tp_bg = None
         if not self._stealth_compat:
             self.setWindowOpacity(0.92)
         self._apply_panel_style()
@@ -3040,6 +3095,15 @@ class MainWindow(QWidget):
             self._reload_profile_bar()  # 预设可能被增删，刷新标题栏下拉
             self._sync_immersive_timer()  # 沉浸式开关可能变化
             self._sync_look_panel()  # 外观面板若开着，同步为最新配置
+            # 透明模式可能在设置页被改：同步伪透明定时器与 emoji 可见性
+            if self.cfg.data.get("transparent_mode"):
+                self._update_transparent_bg()
+                self._tp_timer.start()
+            else:
+                self._tp_timer.stop()
+                self._tp_bg = None
+                self.update()
+            self._apply_emoji_visibility()
             if (self.monitor_btn is not None and self.monitor_btn.isChecked()):
                 self.monitor_timer.start(self.cfg.monitor_interval_ms)
 
