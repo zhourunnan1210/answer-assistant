@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.6.2"
+APP_VERSION = "2.7"
 
 
 def _install_crash_log():
@@ -49,7 +49,7 @@ def _install_crash_log():
             pass
     sys.excepthook = hook
 from audio_capture import LoopbackCapture, MicCapture, merge_wavs
-from llm import (AUTO_PROMPT, ask_interview, ask_text, ask_vision,
+from llm import (ask_interview, ask_text, ask_vision,
                  apply_review, build_fixed_profile, build_flexible_docs,
                  fetch_models, generate_review, test_asr, test_connection,
                  transcribe_audio)
@@ -374,62 +374,6 @@ def diff_ratio(a: bytes, b: bytes, tol: int = 14) -> float:
         return 1.0
     changed = sum(1 for x, y in zip(a, b) if abs(x - y) > tol)
     return changed / len(a)
-
-
-# ---- 自动作答辅助 ----
-
-def _norm_box(box):
-    """把模型返回的坐标框规范化为 0~1 的 [x1,y1,x2,y2]，非法返回 None。
-    兼容 0~1 与 0~1000 两种坐标系。"""
-    try:
-        vals = [float(v) for v in box]
-    except (TypeError, ValueError):
-        return None
-    if len(vals) != 4:
-        return None
-    if max(vals) > 2:  # 0~1000 归一化坐标（部分模型的习惯）
-        vals = [v / 1000.0 for v in vals]
-    vals = [min(max(v, 0.0), 1.0) for v in vals]
-    if vals[2] <= vals[0] or vals[3] <= vals[1]:
-        return None
-    return vals
-
-
-def parse_auto_answer(text: str):
-    """从模型输出中解析 {answer, answer_box, next_box}，失败返回 None。"""
-    i, j = text.find("{"), text.rfind("}")
-    if i < 0 or j <= i:
-        return None
-    try:
-        data = json.loads(text[i:j + 1])
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    box = _norm_box(data.get("answer_box"))
-    if not box:
-        return None
-    next_box = _norm_box(data.get("next_box")) if data.get("next_box") else None
-    return {"answer": str(data.get("answer") or "").strip(),
-            "answer_box": box, "next_box": next_box}
-
-
-def box_center(box, region: dict):
-    """归一化坐标框中心 -> 全局逻辑像素坐标。"""
-    cx = (box[0] + box[2]) / 2
-    cy = (box[1] + box[3]) / 2
-    return (int(region["x"] + cx * region["w"]),
-            int(region["y"] + cy * region["h"]))
-
-
-def click_point(x: int, y: int):
-    """在全局逻辑坐标 (x,y) 处模拟一次鼠标左键点击（换算屏幕缩放）。"""
-    screen = QGuiApplication.screenAt(QPoint(x, y)) or QGuiApplication.primaryScreen()
-    dpr = screen.devicePixelRatio()
-    u = ctypes.windll.user32
-    u.SetCursorPos(int(x * dpr), int(y * dpr))
-    u.mouse_event(0x0002, 0, 0, 0, 0)  # 左键按下
-    u.mouse_event(0x0004, 0, 0, 0, 0)  # 左键抬起
 
 
 # ---- 全局快捷键（免鼠标触发识别，避免浏览器检测到鼠标离开页面）----
@@ -835,6 +779,15 @@ class SettingsDialog(QDialog):
         self.thinking = QCheckBox("开启思考模式（Kimi K2 / Claude 等推理模型，更准但稍慢）")
         self.thinking.setChecked(bool(getattr(cfg, "thinking", True)))
         form.addRow("思考模式", self.thinking)
+
+        self.auto_interval = QSpinBox()
+        self.auto_interval.setRange(5, 300)
+        self.auto_interval.setSuffix(" 秒")
+        self.auto_interval.setValue(int(cfg.data.get("auto_interval_sec", 30)))
+        self.auto_interval.setToolTip(
+            "主窗口「🤖 自动」开启后，每隔多少秒自动识别一次框选区域\n"
+            "（题目未变化会自动跳过，不消耗模型调用）")
+        form.addRow("自动识别间隔", self.auto_interval)
 
         hint = QLabel("答题模型需支持图片输入（多模态）")
         hint.setWordWrap(True)
@@ -1578,6 +1531,8 @@ class SettingsDialog(QDialog):
             self.prompt.setPlainText(p["prompt"])
         if p.get("qa_prompt"):
             self.qa_prompt.setPlainText(p["qa_prompt"])
+        if p.get("auto_interval_sec"):
+            self.auto_interval.setValue(int(p["auto_interval_sec"]))
         self.test_result.setText(f"已载入预设「{name}」，点「保存」生效")
 
     def _save_profile(self):
@@ -1593,6 +1548,7 @@ class SettingsDialog(QDialog):
             "thinking": self.thinking.isChecked(),
             "prompt": self.prompt.toPlainText().strip(),
             "qa_prompt": self.qa_prompt.toPlainText().strip(),
+            "auto_interval_sec": self.auto_interval.value(),
         }
         self.cfg.save()  # 预设立即写入配置文件
         self._reload_profiles(select=name)
@@ -1634,6 +1590,7 @@ class SettingsDialog(QDialog):
             "thinking": self.thinking.isChecked(),
             "prompt": self.prompt.toPlainText().strip() or DEFAULT_PROMPT,
             "monitor_interval_ms": self.interval.value() * 1000,
+            "auto_interval_sec": self.auto_interval.value(),
             "hotkey": self.hotkey.currentText(),
             "font_size": self.font_size.value(),
             "window_opacity": self.opacity.value() / 100,
@@ -1754,8 +1711,6 @@ class MainWindow(QWidget):
         self._baseline = None
         self._change_hits = 0
         self._inflight = False
-        self._auto_count = 0
-        self._auto_pre_fp = None
         # 问答助手模式状态
         self._cap_thread = None       # 音频采集线程（扬声器/系统输出）
         self._mic_thread = None       # 麦克风采集线程（面试模式下的本人回答）
@@ -1883,16 +1838,18 @@ class MainWindow(QWidget):
             "结合设置中加载的资料库生成回答建议")
         self.interview_btn.setCheckable(True)
         self.interview_btn.toggled.connect(self._toggle_interview)
-        # ---- 监控模式 / 自动模式暂时下线（按钮不显示，恢复时取消注释）----
+        # ---- 监控模式暂时下线（按钮不显示，恢复时取消注释）----
         # self.monitor_btn = QPushButton("👁 监控: 关", toolTip="开启后画面变化自动识别")
         # self.monitor_btn.setCheckable(True)
         # self.monitor_btn.toggled.connect(self._toggle_monitor)
-        # self.auto_btn = QPushButton("🤖 自动: 关",
-        #                             toolTip="自动点击答案并翻页连续作答")
-        # self.auto_btn.setCheckable(True)
-        # self.auto_btn.toggled.connect(self._toggle_auto)
         self.monitor_btn = None  # 占位：内部引用均判空
-        self.auto_btn = None
+        # 自动模式（v2.7）：固定周期轮询 + 本地指纹去重，不自动点击/翻页
+        self.auto_btn = QPushButton(
+            "🤖 自动: 关",
+            toolTip="自动模式：每隔设定间隔自动识别框选区域，"
+                    "题目未变自动跳过（仅答题模式，间隔在 ⚙设置·答题模型 中调整）")
+        self.auto_btn.setCheckable(True)
+        self.auto_btn.toggled.connect(self._toggle_auto)
         ops.addWidget(self.region_btn)
         ops.addWidget(self.ask_btn, stretch=1)
         # ---- 问答模式暂时下线：问答是面试的子集，按钮隐藏；
@@ -1901,7 +1858,7 @@ class MainWindow(QWidget):
         # ops.addWidget(self.qa_btn)
         ops.addWidget(self.interview_btn)
         # ops.addWidget(self.monitor_btn)
-        # ops.addWidget(self.auto_btn)
+        ops.addWidget(self.auto_btn)
         # 右下角拖拽手柄：无边框窗口的大小调整
         grip = QSizeGrip(self)
         grip.setToolTip("拖拽调整窗口大小")
@@ -1909,7 +1866,7 @@ class MainWindow(QWidget):
         lay.addLayout(ops)
         # qa_answer_btn 不进 _chrome：它的可见性由问答/面试开关单独管理
         self._chrome += [self.status, self.region_btn, self.ask_btn,
-                         self.interview_btn, grip]
+                         self.interview_btn, self.auto_btn, grip]
 
         # 沉浸式模式：轮询鼠标位置，自动隐藏/显示外壳 UI
         self._immersive_timer = QTimer(self)
@@ -1935,6 +1892,13 @@ class MainWindow(QWidget):
 
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._monitor_tick)
+
+        # 答题自动模式：固定周期轮询 + 本地指纹去重（题目未变不调用模型）
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.timeout.connect(self._auto_tick)
+        self._quiz_fp = None      # 最近一次已识别题目的截图指纹（去重基线）
+        self._auto_failures = 0   # 连续识别失败计数（≥3 自动停止）
 
         self._update_region_btn()
         self._apply_emoji_visibility()  # 透明模式持久化开启时，启动即去除 emoji
@@ -2321,7 +2285,8 @@ class MainWindow(QWidget):
 
     def _emoji_widgets(self):
         return (self.title_lbl, self.region_btn, self.ask_btn,
-                self.interview_btn, self.qa_answer_btn, self.qa_btn)
+                self.interview_btn, self.qa_answer_btn, self.qa_btn,
+                self.auto_btn)
 
     def _set_btn_text(self, w, text):
         """设置带 emoji 的按钮/标题文本：透明模式下自动去掉图标前缀。"""
@@ -2485,6 +2450,7 @@ class MainWindow(QWidget):
     def _clear_answer(self):
         """Ctrl+Alt+C：清空答案区，恢复默认 placeholder。"""
         self.answer.clear()
+        self._quiz_fp = None  # 自动模式去重基线一并清空，下轮视为新题
         self._refresh_hint()
         self.status.setText("答案区已清空")
 
@@ -2586,6 +2552,10 @@ class MainWindow(QWidget):
         """面试辅助：双通道监听 + 资料库上下文 + 对话记录。
         未配置资料库时不阻塞开启——降级为纯问答（不注入个人资料）。"""
         if on:
+            # 自动模式仅答题模式：切到面试模式立即退出
+            if self.auto_btn is not None and self.auto_btn.isChecked():
+                self.auto_btn.setChecked(False)
+                self.status.setText("已切换到面试模式，自动模式已停止")
             has_profile = self._iv_profile_available()
             if not self.qa_btn.isChecked():
                 self.qa_btn.setChecked(True)   # 自动开启问答监听
@@ -3189,17 +3159,26 @@ class MainWindow(QWidget):
             self.show()
         if pix is None:
             self._inflight = False
-            self.status.setText("截图失败，请重新框选区域")
-            if (auto and self.auto_btn is not None
-                    and self.auto_btn.isChecked()):
-                self.auto_btn.setChecked(False)
+            if auto and self.auto_btn is not None \
+                    and self.auto_btn.isChecked():
+                self.auto_btn.setChecked(False)  # 先停止再提示，避免被覆盖
+                self.status.setText("截图失败，自动模式已停止，请重新框选区域")
+            else:
+                self.status.setText("截图失败，请重新框选区域")
             return
+        # 截图指纹去重（自动模式核心）：题目未变不调用模型、不动答案区；
+        # 手动识别也同步刷新基线，避免自动模式把同一题当作新题重复识别
+        fp = fingerprint(pix)
+        if auto and self._quiz_fp is not None \
+                and diff_ratio(fp, self._quiz_fp) <= 0.03:
+            self._inflight = False
+            self.status.setText("自动模式：题目未变化，已跳过")  # D3 轻提示
+            return
+        self._quiz_fp = fp
         png = pixmap_to_png(pix)
         snap = dict(self.cfg.data)
-        if auto:
-            snap["prompt"] = AUTO_PROMPT  # 自动模式要求模型返回选项坐标
         self.ask_btn.setEnabled(False)
-        self.status.setText("识别中…")
+        self.status.setText("识别中…" if manual else "自动模式：识别新题目…")
         # 切换题目：先清空答案区，避免旧答案残留误导
         self.answer.setHtml("<span style='color:#9aa3b2'>识别中…</span>")
         self._worker = FuncThread(lambda: ask_vision(snap, png), self)
@@ -3209,124 +3188,87 @@ class MainWindow(QWidget):
     def _on_answer(self, result, error, manual: bool, auto: bool = False):
         self.ask_btn.setEnabled(True)
         ts = datetime.now().strftime("%H:%M:%S")
-        auto_data = None
-        if (auto and not error and self.auto_btn is not None
-                and self.auto_btn.isChecked()):
-            auto_data = parse_auto_answer(result)
         if error:
             self.status.setText("识别失败")
             self.answer.setMarkdown(f"**[{ts}] 识别失败**\n\n```\n{error}\n```")
         else:
             self.status.setText("识别完成 ✅")
-            show = result
-            if auto_data and auto_data["answer"]:
-                show = auto_data["answer"] + "\n\n（已自动点击选项）"
-            self.answer.setMarkdown(f"**[{ts}] 答案**\n\n{show}")
+            self.answer.setMarkdown(f"**[{ts}] 答案**\n\n{result}")
         self._inflight = False
         if self.monitor_btn is not None and self.monitor_btn.isChecked():
             # 答案刷新后窗口像素变化，延迟重建基线避免误触发
             self._baseline = None
             QTimer.singleShot(900, self._reset_baseline)
-        if (auto and self.auto_btn is not None
-                and self.auto_btn.isChecked()):
+        if auto:
+            # 自动模式错误处理：单次失败不退出；连续 3 次失败兜底停止
             if error:
-                self.status.setText("识别出错，自动模式已停止")
-                self.auto_btn.setChecked(False)
-            elif not auto_data:
-                self.status.setText("无法定位选项位置，自动模式已停止（答案已显示）")
-                self.auto_btn.setChecked(False)
+                self._auto_failures += 1
+                if self._auto_failures >= 3 and self.auto_btn.isChecked():
+                    self.auto_btn.setChecked(False)
+                    self.status.setText(
+                        "连续识别失败，自动模式已停止，请检查模型配置")
             else:
-                self.status.setText("自动点击答案选项…")
-                self.hide()  # 点击前隐藏自身，防止点到本窗口
-                QTimer.singleShot(300, lambda: self._auto_click(auto_data))
+                self._auto_failures = 0
 
-    # ---- 自动作答模式 ----
+    # ---- 自动模式（v2.7：周期轮询 + 指纹去重，不自动点击/翻页） ----
+
+    def _auto_interval_sec(self) -> int:
+        try:
+            return max(5, min(300, int(self.cfg.data.get(
+                "auto_interval_sec", 30))))
+        except (TypeError, ValueError):
+            return 30
+
+    def _schedule_auto(self):
+        if self.auto_btn.isChecked():
+            self._auto_timer.start(self._auto_interval_sec() * 1000)
+
+    def _auto_cancel(self, msg: str):
+        """开启被前置条件拒绝：按钮复位（不触发 toggled 覆盖提示）。"""
+        self.auto_btn.blockSignals(True)
+        self.auto_btn.setChecked(False)
+        self.auto_btn.blockSignals(False)
+        self._set_btn_text(self.auto_btn, "🤖 自动: 关")
+        self.status.setText(msg)
 
     def _toggle_auto(self, on: bool):
-        self.auto_btn.setText("🤖 自动: 开" if on else "🤖 自动: 关")
-        if on:
-            if not self.cfg.region:
-                self.status.setText("请先框选题目区域")
-                self.auto_btn.setChecked(False)
-                self._select_region()
-                return
-            ret = QMessageBox.question(
-                self, "确认开启自动模式",
-                "自动模式将【自动点击】框选区域内的答案选项并翻页，连续作答。\n"
-                "请确认：框选区域就是题目区域、选项可直接点击，"
-                "且你已了解相关平台规则。\n\n确定开启？")
-            if ret != QMessageBox.Yes:
-                self.auto_btn.setChecked(False)
-                return
-            if self.monitor_btn.isChecked():
-                self.monitor_btn.setChecked(False)  # 自动模式自带换题检测
-            self._auto_count = 0
-            self._auto_pre_fp = None
-            self.status.setText("自动模式：识别当前题…")
-            self._inflight = True
-            self._capture_hidden_and_ask(manual=False, auto=True)
-        else:
+        self._set_btn_text(self.auto_btn,
+                           "🤖 自动: 开" if on else "🤖 自动: 关")
+        if not on:
+            self._auto_timer.stop()
+            self._auto_failures = 0
             self.status.setText("自动模式已停止")
-
-    def _auto_click(self, data: dict):
-        if not self.auto_btn.isChecked() or not self.cfg.region:
-            self._apply_capture_immunity()  # 先隐身再显示（全生命周期防护）
-            self.show()
             return
-        try:
-            x, y = box_center(data["answer_box"], self.cfg.region)
-            click_point(x, y)
-        except Exception as exc:  # noqa: BLE001
-            self._apply_capture_immunity()
-            self.show()
-            self.status.setText(f"自动点击失败：{exc}")
-            self.auto_btn.setChecked(False)
+        # 仅答题模式生效：面试/问答开启时不允许进入（互斥见 _toggle_interview）
+        if self.interview_btn.isChecked() or self.qa_btn.isChecked():
+            self._auto_cancel("自动模式仅答题模式可用")
             return
-        if data.get("next_box"):
-            QTimer.singleShot(800, lambda: self._auto_click_next(data["next_box"]))
-        else:
-            QTimer.singleShot(500, self._auto_after_clicks)
-
-    def _auto_click_next(self, next_box):
-        try:
-            x, y = box_center(next_box, self.cfg.region)
-            click_point(x, y)
-        except Exception:  # noqa: BLE001
-            pass
-        QTimer.singleShot(600, self._auto_after_clicks)
-
-    def _auto_after_clicks(self):
-        self._apply_capture_immunity()  # 先隐身再显示（全生命周期防护）
-        self.show()
-        self.status.setText("自动模式：等待切换到下一题…")
-        QTimer.singleShot(200, self._auto_snapshot_baseline)
-
-    def _auto_snapshot_baseline(self):
-        """界面恢复后采集基线画面，用于检测是否切到下一题。"""
-        pix = grab_region(self.cfg.region) if self.cfg.region else None
-        self._auto_pre_fp = fingerprint(pix) if pix is not None else None
-        QTimer.singleShot(800, lambda: self._auto_wait_change(0))
-
-    def _auto_wait_change(self, attempts: int):
-        if not self.auto_btn.isChecked() or not self.cfg.region:
+        if not self.cfg.region:
+            self._auto_cancel("请先框选题目区域")
+            self._select_region()
             return
-        pix = grab_region(self.cfg.region)
-        if pix is not None and self._auto_pre_fp is not None:
-            if diff_ratio(fingerprint(pix), self._auto_pre_fp) > 0.03:
-                self._auto_count += 1
-                if self._auto_count >= 200:  # 安全上限
-                    self.status.setText("已达连答上限（200 题），自动模式停止")
-                    self.auto_btn.setChecked(False)
-                    return
-                self.status.setText(f"自动模式：识别第 {self._auto_count + 1} 题…")
-                self._inflight = True
-                self._capture_hidden_and_ask(manual=False, auto=True)
-                return
-        if attempts >= 10:  # 约 10 秒无变化则停止
-            self.status.setText("页面未切换到新题目，自动模式已停止")
-            self.auto_btn.setChecked(False)
+        self._auto_failures = 0
+        sec = self._auto_interval_sec()
+        self.status.setText(f"自动模式：每 {sec} 秒识别一次，题目未变自动跳过")
+        self._auto_tick()  # D4：激活即识别一次
+
+    def _auto_tick(self):
+        if not self.auto_btn.isChecked():
             return
-        QTimer.singleShot(1000, lambda: self._auto_wait_change(attempts + 1))
+        # 周期锚定在每轮起点：手动「识别本题」/快捷键不影响计时；
+        # 识别耗时超过间隔时下一轮自然跳过（inflight 判重）
+        self._schedule_auto()
+        # D2：窗口收进托盘/最小化时暂停识别（计时器继续，恢复后自动接续）
+        if self.isHidden() or self.isMinimized():
+            return
+        if self._inflight:
+            return  # 上一轮未结束，本轮跳过
+        if not self.cfg.region:
+            self.auto_btn.setChecked(False)  # 先停止再提示，避免被覆盖
+            self.status.setText("框选区域已失效，自动模式已停止")
+            return
+        self._inflight = True
+        self._capture_hidden_and_ask(manual=False, auto=True)
 
     # ---- 监控模式 ----
 

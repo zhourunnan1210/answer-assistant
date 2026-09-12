@@ -29,9 +29,10 @@ app = QApplication(sys.argv)
 win = app_main.MainWindow()
 win.show()
 assert win.ask_btn and win.region_btn
-assert win.monitor_btn is None and win.auto_btn is None, "监控/自动按钮应已下线"
+assert win.monitor_btn is None, "监控按钮应已下线"
+assert win.auto_btn is not None, "v2.7 起自动模式按钮恢复（新语义：轮询去重）"
 assert llm.DEFAULT_PROMPT
-print("✓ 主窗口构造正常（监控/自动按钮已隐藏）")
+print("✓ 主窗口构造正常（监控按钮隐藏，自动模式按钮就位）")
 
 # 3. 设置对话框构造
 dlg = app_main.SettingsDialog(win.cfg, win)
@@ -66,17 +67,12 @@ assert "thinking" in inspect.signature(llm._openai_chat).parameters
 assert "thinking" in inspect.signature(llm._anthropic_chat).parameters
 print("✓ fetch_models / 思考模式参数就位")
 
-# 5. 自动作答解析函数
-d = app_main.parse_auto_answer('{"answer":"B","answer_box":[0.1,0.2,0.9,0.3],"next_box":null}')
-assert d and d["answer_box"] == [0.1, 0.2, 0.9, 0.3] and d["next_box"] is None
-d2 = app_main.parse_auto_answer('前言 {"answer":"A","answer_box":[50,150,950,230]} 后缀')
-assert d2 and abs(d2["answer_box"][0] - 0.05) < 1e-6, "0~1000 坐标系兼容失败"
-assert app_main.parse_auto_answer("没有JSON") is None
-pt = app_main.box_center([0, 0, 1, 0.5], {"x": 100, "y": 200, "w": 400, "h": 300})
-assert pt == (300, 275), pt
-assert hasattr(win, "auto_btn") and hasattr(win, "_auto_wait_change")
-assert llm.AUTO_PROMPT
-print("✓ 自动作答解析/坐标/点击链路就位")
+# 5. 旧自动作答（自动点击）链路已于 v2.7 移除，新自动模式见文件末尾 v2.7 节
+assert not hasattr(app_main, "parse_auto_answer")
+assert not hasattr(app_main, "click_point") and not hasattr(app_main, "box_center")
+assert not hasattr(app_main.MainWindow, "_auto_click")
+assert hasattr(win, "auto_btn") and win.auto_btn is not None
+print("✓ 旧自动点击链路已移除，新自动模式按钮就位")
 
 # 6. 标题栏预设下拉
 assert hasattr(win, "profile_bar")
@@ -862,7 +858,7 @@ win._apply_panel_style()
 print("✓ v2.5.1：纯图标按钮透明模式改显文字就位")
 
 # ================= v2.6：伪透明背景（截窗口后方画面做背景，修复黑底） =================
-assert app_main.APP_VERSION.startswith("2.6")
+assert app_main.APP_VERSION >= "2.6"
 # 本环境 Qt 半透明/DWM 玻璃均渲染黑底（已实测），透明模式走伪透明：
 # paintEvent 绘制截取到的窗口后方画面作为背景
 for _m in ("paintEvent", "moveEvent", "resizeEvent", "_update_transparent_bg"):
@@ -884,7 +880,7 @@ assert not win._tp_timer.isActive() and win._tp_bg is None
 print("✓ v2.6：伪透明背景（截窗口后方画面）就位")
 
 # ================= v2.6.1：截图链路修复（不重叠不闪烁/隐藏后重设隐身） =================
-assert app_main.APP_VERSION.startswith("2.6")
+assert app_main.APP_VERSION >= "2.6.1"
 import inspect as _inspect
 _sig = _inspect.signature(app_main.MainWindow._grab_and_send)
 assert "hidden" in _sig.parameters  # 隐藏过才重设隐身
@@ -929,11 +925,88 @@ _src = _inspect.getsource(app_main.MainWindow._bring_to_front)
 assert _src.index("_apply_capture_immunity") < _src.index("showNormal()")
 _src = _inspect.getsource(app_main.MainWindow._select_region)
 assert _src.index("set_capture_immune") < _src.index("self._selector.show()")
-# 旧自动模式残留链路的 show 同样先补隐身
-for _m in ("_auto_click", "_auto_after_clicks"):
-    _src = _inspect.getsource(getattr(app_main.MainWindow, _m))
-    assert _src.index("_apply_capture_immunity") < _src.index("self.show()"), _m
 print("✓ v2.6.2：先设隐身再显示（全生命周期无暴露窗口期）就位")
+
+# ================= v2.7：答题自动模式（周期轮询+指纹去重） =================
+assert app_main.APP_VERSION >= "2.7"
+# 结构：按钮/定时器/状态就位
+assert win.auto_btn is not None and win.auto_btn.isCheckable()
+assert win.auto_btn in win._chrome            # 沉浸式联动隐藏
+assert win.auto_btn in win._emoji_widgets()   # 透明模式 emoji 剥离
+assert win._auto_timer.isSingleShot()
+assert win._quiz_fp is None and win._auto_failures == 0
+# 未框选时开启：提示先框选且不进入激活态（会弹出框选遮罩，先拦截）
+_orig_sel = win._select_region
+win._select_region = lambda: None
+win.cfg.data["region"] = None
+win.interview_btn.setChecked(False)  # 自动模式仅答题模式：确保互斥项关闭
+win.qa_btn.setChecked(False)
+QApplication.processEvents()
+win.auto_btn.setChecked(True)
+assert not win.auto_btn.isChecked()           # 未框选：未激活
+assert "框选" in win.status.text()
+win._select_region = _orig_sel
+# 框选后开启：D4 激活即识别（inflight 置位 + 计时器已排程）
+_calls = {"vision": 0}
+_orig_vision = app_main.ask_vision
+def _fake_vision(snap, png):
+    _calls["vision"] += 1
+    return "【答案】A", None
+app_main.ask_vision = _fake_vision
+# 用固定内容 pixmap 代替真实屏幕：测试机桌面（如控制台滚动）会引入噪声
+from PySide6.QtGui import QPixmap as _QPixmap
+from PySide6.QtCore import Qt as _Qt
+_screen = {"pix": _QPixmap(80, 80)}
+_screen["pix"].fill(_Qt.black)
+_orig_grab_fn = app_main.grab_region
+app_main.grab_region = lambda r: _screen["pix"]
+def _wait_idle(timeout=3):
+    _t0 = _time.time()
+    while win._inflight and _time.time() - _t0 < timeout:
+        QApplication.processEvents()
+        _time.sleep(0.02)
+win.cfg.data["region"] = {"x": 0, "y": 0, "w": 80, "h": 80}  # 远离窗口不重叠
+win.cfg.data["auto_interval_sec"] = 30
+win.interview_btn.setChecked(False)  # 自动模式仅答题模式：确保互斥项关闭
+win.qa_btn.setChecked(False)
+QApplication.processEvents()
+win.auto_btn.setChecked(True)
+assert win.auto_btn.isChecked() and win._inflight  # D4 激活即识别
+assert win._auto_timer.isActive()                  # 下一轮已排程
+_wait_idle()
+assert _calls["vision"] == 1 and not win._inflight
+assert win._quiz_fp is not None                  # 去重基线已记录
+# 第二轮：画面未变 → 本地去重跳过，不再调用模型（D3 轻提示）
+win._auto_tick()
+_wait_idle()
+assert _calls["vision"] == 1                     # 未重复调用
+assert "未变化" in win.status.text()
+# 第三轮：画面变化（换题）→ 重新识别
+_screen["pix"].fill(_Qt.white)
+win._auto_tick()
+_wait_idle()
+assert _calls["vision"] == 2                     # 新题重新识别
+# D2：窗口收进托盘（隐藏）时暂停识别
+win.hide()
+win._auto_tick()
+assert _calls["vision"] == 2
+win._apply_capture_immunity()  # 先隐身再显示（全生命周期约束）
+win.show()
+QApplication.processEvents()
+# 关闭：计时器停止、状态复位
+win.auto_btn.setChecked(False)
+assert not win._auto_timer.isActive()
+app_main.ask_vision = _orig_vision
+app_main.grab_region = _orig_grab_fn
+win.cfg.data["region"] = None
+# 设置页「答题模型」含自动识别间隔控件，且入预设/快照
+_dlg = app_main.SettingsDialog(win.cfg, win)
+assert hasattr(_dlg, "auto_interval")
+_dlg.auto_interval.setValue(45)
+assert _dlg._snapshot()["auto_interval_sec"] == 45
+_dlg.auto_interval.setValue(30)
+_dlg.close()
+print("✓ v2.7：答题自动模式（激活即识别/去重跳过/托盘暂停/间隔配置）就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

@@ -144,6 +144,7 @@ DEFAULTS = {
     "always_on_top": True,
     "window_opacity": 0.92,              # 0.5 ~ 1.0
     "monitor_interval_ms": 1500,         # 监控轮询间隔
+    "auto_interval_sec": 30,             # 自动模式识别间隔（秒），随预设保存
     "thinking": True,                    # 默认开启思考模式（答题/复盘/资料初始化）
     "qa_thinking": False,                # 问答/面试独立思考开关：默认关，实时场景低延迟优先
     "hotkey": "Ctrl+Alt+Q",              # 全局触发识别的快捷键
