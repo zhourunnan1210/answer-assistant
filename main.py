@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.6"
+APP_VERSION = "2.6.1"
 
 
 def _install_crash_log():
@@ -3159,12 +3159,29 @@ class MainWindow(QWidget):
         self._capture_hidden_and_ask(manual=True)
 
     def _capture_hidden_and_ask(self, manual: bool, auto: bool = False):
-        self.hide()  # 短暂隐藏自身，避免半透明窗口入镜
-        QTimer.singleShot(260, lambda: self._grab_and_send(manual, auto))
+        # 只有本窗口与框选区域重叠时才需要短暂隐藏避免入镜；
+        # 不重叠时直接截图，消除无谓的窗口闪烁
+        need_hide = True
+        r = self.cfg.region
+        if isinstance(r, dict):
+            need_hide = self.frameGeometry().intersects(
+                QRect(r["x"], r["y"], r["w"], r["h"]))
+        if need_hide:
+            self.hide()  # 短暂隐藏自身，避免窗口入镜
+            QTimer.singleShot(
+                260, lambda: self._grab_and_send(manual, auto, hidden=True))
+        else:
+            self._grab_and_send(manual, auto)
 
-    def _grab_and_send(self, manual: bool, auto: bool = False):
+    def _grab_and_send(self, manual: bool, auto: bool = False,
+                       hidden: bool = False):
         pix = grab_region(self.cfg.region) if self.cfg.region else None
-        self.show()
+        if hidden:
+            self.show()
+            # hide→show 后 HWND/DWM 表面状态可能变化，Win10 2004 上
+            # SetWindowDisplayAffinity 隐身属性会随之丢失（共享画面重现窗口），
+            # 等 Qt 处理完本次事件循环后重新设置
+            QTimer.singleShot(0, self._apply_capture_immunity)
         if pix is None:
             self._inflight = False
             self.status.setText("截图失败，请重新框选区域")

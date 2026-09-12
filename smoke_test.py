@@ -862,7 +862,7 @@ win._apply_panel_style()
 print("✓ v2.5.1：纯图标按钮透明模式改显文字就位")
 
 # ================= v2.6：伪透明背景（截窗口后方画面做背景，修复黑底） =================
-assert app_main.APP_VERSION == "2.6"
+assert app_main.APP_VERSION.startswith("2.6")
 # 本环境 Qt 半透明/DWM 玻璃均渲染黑底（已实测），透明模式走伪透明：
 # paintEvent 绘制截取到的窗口后方画面作为背景
 for _m in ("paintEvent", "moveEvent", "resizeEvent", "_update_transparent_bg"):
@@ -882,6 +882,42 @@ assert win._tp_bg is not None
 win._lk_transparent.setChecked(False)
 assert not win._tp_timer.isActive() and win._tp_bg is None
 print("✓ v2.6：伪透明背景（截窗口后方画面）就位")
+
+# ================= v2.6.1：截图链路修复（不重叠不闪烁/隐藏后重设隐身） =================
+assert app_main.APP_VERSION == "2.6.1"
+import inspect as _inspect
+_sig = _inspect.signature(app_main.MainWindow._grab_and_send)
+assert "hidden" in _sig.parameters  # 隐藏过才重设隐身
+assert "_apply_capture_immunity" in _inspect.getsource(
+    app_main.MainWindow._grab_and_send)  # hide→show 后重设隐身属性
+# 功能验证：窗口与框选区域不重叠时不隐藏窗口（无闪烁）
+_grab_calls = []
+_orig_grab = win._grab_and_send
+def _fake_grab(*a, **k):
+    _grab_calls.append(k.get("hidden", False))
+    if k.get("hidden"):
+        win.show()  # 模拟真实 _grab_and_send 截完恢复显示
+win._grab_and_send = _fake_grab
+win.move(900, 600)
+QApplication.processEvents()
+win.cfg.data["region"] = {"x": 0, "y": 0, "w": 60, "h": 60}  # 远离窗口
+win._capture_hidden_and_ask(manual=True)
+QApplication.processEvents()
+assert _grab_calls == [False] and win.isVisible()  # 未隐藏、无闪烁
+# 窗口压住框选区域时仍需隐藏截图，且截完重新显示
+win.cfg.data["region"] = {"x": win.x(), "y": win.y(), "w": 200, "h": 200}
+win._capture_hidden_and_ask(manual=True)
+QApplication.processEvents()
+assert not win.isVisible()  # 已临时隐藏
+import time as _time
+_t0 = _time.time()
+while len(_grab_calls) < 2 and _time.time() - _t0 < 2:  # 等 260ms 定时器触发
+    QApplication.processEvents()
+    _time.sleep(0.02)
+assert _grab_calls == [False, True] and win.isVisible()
+win._grab_and_send = _orig_grab
+win.cfg.data["region"] = None
+print("✓ v2.6.1：截图不重叠不闪烁/隐藏后重设隐身就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
