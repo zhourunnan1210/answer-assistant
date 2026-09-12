@@ -134,30 +134,45 @@ def _anthropic_chat(cfg, content_parts, thinking: bool) -> str:
     raise LlmError("请求失败")
 
 
-def ask_vision(cfg: dict, png_bytes: bytes) -> str:
-    """把题目截图发给多模态模型，返回答案文本。cfg 为 config 字典快照。"""
+_SAME_JUDGE = (
+    "【判重规则】本次提供两张截图：第一张是上一题，第二张是当前屏幕。"
+    "请先判断两张图是否为同一道题——倒计时数字、进度条、动画等动态元素的"
+    "变化不算换题，题干和选项相同即视为同一题。"
+    "若为同一题，只回复 SAME，不要输出任何其他内容；"
+    "若为不同题，忽略第一张图，按以下要求作答第二张图中的题目。\n\n"
+)
+
+
+def ask_vision(cfg: dict, png_bytes: bytes, prev_png: bytes = None) -> str:
+    """把题目截图发给多模态模型，返回答案文本。cfg 为 config 字典快照。
+    prev_png 非空时走双图判重（自动模式去抖）：同一题模型只回 SAME。"""
     if not cfg.get("api_key"):
         raise LlmError("未配置 API Key，请先在设置中填写。")
     if not cfg.get("model"):
         raise LlmError("未配置模型名称，请先在设置中填写。")
 
     b64 = base64.b64encode(png_bytes).decode("ascii")
+    prev_b64 = base64.b64encode(prev_png).decode("ascii") if prev_png else None
     prompt = cfg.get("prompt") or DEFAULT_PROMPT
+    text = (_SAME_JUDGE + prompt) if prev_b64 else prompt
     thinking = bool(cfg.get("thinking", True))
 
     if cfg.get("provider") == "anthropic":
-        parts = [
-            {"type": "image",
-             "source": {"type": "base64", "media_type": "image/png", "data": b64}},
-            {"type": "text", "text": prompt},
-        ]
+        parts = []
+        if prev_b64:
+            parts.append({"type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": prev_b64}})
+        parts.append({"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": b64}})
+        parts.append({"type": "text", "text": text})
         return _anthropic_chat(cfg, parts, thinking)
     else:
-        parts = [
-            {"type": "text", "text": prompt},
-            {"type": "image_url",
-             "image_url": {"url": f"data:image/png;base64,{b64}"}},
-        ]
+        parts = [{"type": "text", "text": text}]
+        if prev_b64:
+            parts.append({"type": "image_url", "image_url": {
+                "url": f"data:image/png;base64,{prev_b64}"}})
+        parts.append({"type": "image_url",
+                      "image_url": {"url": f"data:image/png;base64,{b64}"}})
         return _openai_chat(cfg, parts, thinking)
 
 

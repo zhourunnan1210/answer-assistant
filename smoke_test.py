@@ -947,11 +947,18 @@ assert not win.auto_btn.isChecked()           # 未框选：未激活
 assert "框选" in win.status.text()
 win._select_region = _orig_sel
 # 框选后开启：D4 激活即识别（inflight 置位 + 计时器已排程）
-_calls = {"vision": 0}
+_calls = {"vision": 0, "prev": 0}
+_state = {"fail": False, "same": False}
 _orig_vision = app_main.ask_vision
-def _fake_vision(snap, png):
+def _fake_vision(snap, png, prev_png=None):
     _calls["vision"] += 1
-    return "【答案】A", None
+    if prev_png:
+        _calls["prev"] += 1
+    if _state["fail"]:
+        raise RuntimeError("模拟一次性网络故障")
+    if _state["same"]:
+        return "SAME"
+    return "【答案】A"  # 与真实 ask_vision 契约一致：返回纯字符串
 app_main.ask_vision = _fake_vision
 # 用固定内容 pixmap 代替真实屏幕：测试机桌面（如控制台滚动）会引入噪声
 from PySide6.QtGui import QPixmap as _QPixmap
@@ -986,10 +993,40 @@ _screen["pix"].fill(_Qt.white)
 win._auto_tick()
 _wait_idle()
 assert _calls["vision"] == 2                     # 新题重新识别
+# Bug A 回归：识别失败后去重基线回滚，下一轮必须重试而不是跳过
+_state["fail"] = True
+_screen["pix"].fill(_Qt.red)                     # 换题，确保本轮发起请求
+win._auto_tick()
+_wait_idle()
+assert _calls["vision"] == 3 and win._auto_failures == 1
+assert "识别失败" in win.status.text()
+_state["fail"] = False
+win._auto_tick()                                 # 题目未变，但上轮失败 → 重试
+_wait_idle()
+assert _calls["vision"] == 4, _calls
+assert win._auto_failures == 0
+# Bug B 回归：重新框选区域后去重基线重置
+win._on_region_selected({"x": 5, "y": 5, "w": 80, "h": 80})
+assert win._quiz_fp is None
+# 重建基线（重置后首轮必发请求）
+win._auto_tick()
+_wait_idle()
+assert _calls["vision"] == 5 and _calls["prev"] == 3  # 无基线帧，单图
+# v2.7.1 混合判重：指纹变化（倒计时噪声）→ 双图仲裁；SAME → 保持旧答案
+_old_md = win.answer.toMarkdown()
+_state["same"] = True
+_screen["pix"].fill(_Qt.blue)  # 指纹变化但模型视角仍是同一题
+win._auto_tick()
+_wait_idle()
+assert _calls["vision"] == 6 and _calls["prev"] == 4  # 携带了上题截图
+assert "双图判定" in win.status.text()
+assert win.answer.toMarkdown() == _old_md             # 答案区未被冲刷
+assert win._quiz_png is not None                      # 基线帧已跟进
+_state["same"] = False
 # D2：窗口收进托盘（隐藏）时暂停识别
 win.hide()
 win._auto_tick()
-assert _calls["vision"] == 2
+assert _calls["vision"] == 6
 win._apply_capture_immunity()  # 先隐身再显示（全生命周期约束）
 win.show()
 QApplication.processEvents()
@@ -1007,6 +1044,7 @@ assert _dlg._snapshot()["auto_interval_sec"] == 45
 _dlg.auto_interval.setValue(30)
 _dlg.close()
 print("✓ v2.7：答题自动模式（激活即识别/去重跳过/托盘暂停/间隔配置）就位")
+print("✓ v2.7.1：双图判重（SAME 保持旧答案）+ 失败重试回滚就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

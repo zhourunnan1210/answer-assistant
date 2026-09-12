@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.7"
+APP_VERSION = "2.7.1"
 
 
 def _install_crash_log():
@@ -1898,6 +1898,9 @@ class MainWindow(QWidget):
         self._auto_timer.setSingleShot(True)
         self._auto_timer.timeout.connect(self._auto_tick)
         self._quiz_fp = None      # 最近一次已识别题目的截图指纹（去重基线）
+        self._quiz_png = None     # 最近一次成功作答的题目截图（双图判重用）
+        self._pending_png = None  # 已发送待答复的截图（成功后转正为基线帧）
+        self._last_answer_md = None  # 答案区当前内容（SAME 判定时恢复用）
         self._auto_failures = 0   # 连续识别失败计数（≥3 自动停止）
 
         self._update_region_btn()
@@ -2451,6 +2454,8 @@ class MainWindow(QWidget):
         """Ctrl+Alt+C：清空答案区，恢复默认 placeholder。"""
         self.answer.clear()
         self._quiz_fp = None  # 自动模式去重基线一并清空，下轮视为新题
+        self._quiz_png = None
+        self._last_answer_md = None
         self._refresh_hint()
         self.status.setText("答案区已清空")
 
@@ -3097,6 +3102,9 @@ class MainWindow(QWidget):
             self.cfg.set("region", None)
             self.cfg.save()
             self._baseline = None
+            self._quiz_fp = None  # 去重基线一并清除
+            self._quiz_png = None
+            self._last_answer_md = None
             if self.monitor_btn is not None and self.monitor_btn.isChecked():
                 self.monitor_btn.setChecked(False)  # 联动关闭监控
             if self.auto_btn is not None and self.auto_btn.isChecked():
@@ -3116,6 +3124,9 @@ class MainWindow(QWidget):
         self.cfg.set("region", region)
         self.cfg.save()
         self._baseline = None
+        self._quiz_fp = None  # 新区域 → 自动模式去重基线重置（规格 §6）
+        self._quiz_png = None
+        self._last_answer_md = None
         self._update_region_btn()
         self.status.setText(
             f"区域已保存：{region['w']}×{region['h']} @ ({region['x']},{region['y']})")
@@ -3177,23 +3188,42 @@ class MainWindow(QWidget):
         self._quiz_fp = fp
         png = pixmap_to_png(pix)
         snap = dict(self.cfg.data)
+        # 双图判重（v2.7.1）：自动模式且已有基线帧时，连同上题截图一起发送，
+        # 由模型仲裁"是否同一题"，避免倒计时/动画噪声导致误判换题
+        prev = self._quiz_png if auto else None
+        self._pending_png = png
         self.ask_btn.setEnabled(False)
         self.status.setText("识别中…" if manual else "自动模式：识别新题目…")
         # 切换题目：先清空答案区，避免旧答案残留误导
         self.answer.setHtml("<span style='color:#9aa3b2'>识别中…</span>")
-        self._worker = FuncThread(lambda: ask_vision(snap, png), self)
+        self._worker = FuncThread(
+            lambda: ask_vision(snap, png, prev_png=prev), self)
         self._worker.done.connect(lambda r, e: self._on_answer(r, e, manual, auto))
         self._worker.start()
 
     def _on_answer(self, result, error, manual: bool, auto: bool = False):
         self.ask_btn.setEnabled(True)
         ts = datetime.now().strftime("%H:%M:%S")
+        # 双图判重：模型判定同一题 → 只回了 SAME
+        same = False
+        if auto and not error:
+            r = (result or "").strip()
+            same = r.upper().startswith("SAME") and len(r) <= 40
         if error:
             self.status.setText("识别失败")
             self.answer.setMarkdown(f"**[{ts}] 识别失败**\n\n```\n{error}\n```")
+        elif same:
+            # 同一题：答案区恢复旧答案，基线帧刷新为本次截图（跟住倒计时漂移）
+            self._quiz_png = self._pending_png
+            if self._last_answer_md:
+                self.answer.setMarkdown(self._last_answer_md)
+            self.status.setText("自动模式：题目未变化，已跳过（双图判定）")
         else:
             self.status.setText("识别完成 ✅")
-            self.answer.setMarkdown(f"**[{ts}] 答案**\n\n{result}")
+            self._last_answer_md = f"**[{ts}] 答案**\n\n{result}"
+            self.answer.setMarkdown(self._last_answer_md)
+            self._quiz_png = self._pending_png  # 成功作答后确立基线帧
+        self._pending_png = None
         self._inflight = False
         if self.monitor_btn is not None and self.monitor_btn.isChecked():
             # 答案刷新后窗口像素变化，延迟重建基线避免误触发
@@ -3203,6 +3233,9 @@ class MainWindow(QWidget):
             # 自动模式错误处理：单次失败不退出；连续 3 次失败兜底停止
             if error:
                 self._auto_failures += 1
+                # 失败不确立去重基线（基线在发送前已更新，需回滚），
+                # 否则下一轮被"题目未变化"拦截，该题永远无法重试
+                self._quiz_fp = None
                 if self._auto_failures >= 3 and self.auto_btn.isChecked():
                     self.auto_btn.setChecked(False)
                     self.status.setText(
