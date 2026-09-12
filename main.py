@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDial
 
 from config import AppConfig, DEFAULT_PROMPT, INTERVIEW_PROMPT, QA_PROMPT, config_dir
 
-APP_VERSION = "2.6.1"
+APP_VERSION = "2.6.2"
 
 
 def _install_crash_log():
@@ -1390,6 +1390,7 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(ok_btn)
         btn_row.addWidget(cancel_btn)
         lay.addLayout(btn_row)
+        set_capture_immune(dlg, True)  # 含资料库隐私内容，同样隐身
         if dlg.exec() != QDialog.Accepted:
             self.test_result.setText("已取消，资料库未改动")
             return
@@ -2009,6 +2010,8 @@ class MainWindow(QWidget):
         修复：窗口被 Win+D/显示桌面最小化后，普通 show() 不会还原，
         托盘"显示主窗口"看似没反应；NOACTIVATE 窗口也无法用
         activateWindow 提层级，这里直接 SetWindowPos。"""
+        # 先补隐身再显示：窗口从重新出现的第一帧起就是隐身的
+        self._apply_capture_immunity()
         if self.isMinimized():
             self.showNormal()
         if not self.isVisible():
@@ -2020,8 +2023,8 @@ class MainWindow(QWidget):
         if not self.cfg.always_on_top:
             u.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)  # 再落回普通层级的顶部
         # 托盘隐藏/恢复后 HWND 或 DWM 表面状态可能变化，隐身属性会丢失（黑块），
-        # 等 Qt 处理完本次事件循环后重新设置
-        QTimer.singleShot(0, self._apply_capture_immunity)
+        # 显示完成后再设置一次并读回验证
+        self._apply_capture_immunity()
 
     def changeEvent(self, e):
         # 被 Win+D / 显示桌面等系统方式最小化时改为收进托盘，
@@ -2047,9 +2050,11 @@ class MainWindow(QWidget):
         on = self.cfg.always_on_top
         self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
         self.top_btn.setChecked(on) if hasattr(self, "top_btn") else None
-        self.show()
-        # setWindowFlag 可能重建窗口句柄，隐身属性需要重新设置
+        # setWindowFlag 可能重建窗口句柄，隐身属性需要重新设置；
+        # 必须先设隐身再显示：窗口从出现在屏幕的第一帧起就是隐身的
         self._apply_capture_immunity()
+        self.show()
+        self._apply_capture_immunity()  # 双保险：show 若重建句柄则补上，否则幂等
 
     def _apply_capture_immunity(self):
         # 默认始终隐身：屏幕共享/录屏时本窗口不可见（无开关）
@@ -3134,8 +3139,8 @@ class MainWindow(QWidget):
     def _select_region(self):
         self._selector = RegionSelector()
         self._selector.selected.connect(self._on_region_selected)
+        set_capture_immune(self._selector, True)  # 框选遮罩先设隐身再显示
         self._selector.show()
-        set_capture_immune(self._selector, True)  # 框选遮罩同样隐身
 
     def _on_region_selected(self, region: dict):
         self.cfg.set("region", region)
@@ -3177,11 +3182,11 @@ class MainWindow(QWidget):
                        hidden: bool = False):
         pix = grab_region(self.cfg.region) if self.cfg.region else None
         if hidden:
-            self.show()
             # hide→show 后 HWND/DWM 表面状态可能变化，Win10 2004 上
-            # SetWindowDisplayAffinity 隐身属性会随之丢失（共享画面重现窗口），
-            # 等 Qt 处理完本次事件循环后重新设置
-            QTimer.singleShot(0, self._apply_capture_immunity)
+            # SetWindowDisplayAffinity 隐身属性会随之丢失（共享画面重现窗口）。
+            # 必须先重设隐身再显示：窗口重新出现的第一帧就是隐身的
+            self._apply_capture_immunity()
+            self.show()
         if pix is None:
             self._inflight = False
             self.status.setText("截图失败，请重新框选区域")
@@ -3265,12 +3270,14 @@ class MainWindow(QWidget):
 
     def _auto_click(self, data: dict):
         if not self.auto_btn.isChecked() or not self.cfg.region:
+            self._apply_capture_immunity()  # 先隐身再显示（全生命周期防护）
             self.show()
             return
         try:
             x, y = box_center(data["answer_box"], self.cfg.region)
             click_point(x, y)
         except Exception as exc:  # noqa: BLE001
+            self._apply_capture_immunity()
             self.show()
             self.status.setText(f"自动点击失败：{exc}")
             self.auto_btn.setChecked(False)
@@ -3289,6 +3296,7 @@ class MainWindow(QWidget):
         QTimer.singleShot(600, self._auto_after_clicks)
 
     def _auto_after_clicks(self):
+        self._apply_capture_immunity()  # 先隐身再显示（全生命周期防护）
         self.show()
         self.status.setText("自动模式：等待切换到下一题…")
         QTimer.singleShot(200, self._auto_snapshot_baseline)

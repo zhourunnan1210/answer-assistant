@@ -884,7 +884,7 @@ assert not win._tp_timer.isActive() and win._tp_bg is None
 print("✓ v2.6：伪透明背景（截窗口后方画面）就位")
 
 # ================= v2.6.1：截图链路修复（不重叠不闪烁/隐藏后重设隐身） =================
-assert app_main.APP_VERSION == "2.6.1"
+assert app_main.APP_VERSION.startswith("2.6")
 import inspect as _inspect
 _sig = _inspect.signature(app_main.MainWindow._grab_and_send)
 assert "hidden" in _sig.parameters  # 隐藏过才重设隐身
@@ -918,6 +918,22 @@ assert _grab_calls == [False, True] and win.isVisible()
 win._grab_and_send = _orig_grab
 win.cfg.data["region"] = None
 print("✓ v2.6.1：截图不重叠不闪烁/隐藏后重设隐身就位")
+
+# ================= v2.6.2：隐身穿梭全生命周期——先设隐身再显示 =================
+# 所有"隐藏后重新可见"的路径都必须先设置隐身属性再 show，杜绝暴露窗口期
+_src = _inspect.getsource(app_main.MainWindow._apply_topmost)
+assert _src.index("_apply_capture_immunity") < _src.index("self.show()")
+_src = _inspect.getsource(app_main.MainWindow._grab_and_send)
+assert _src.index("_apply_capture_immunity") < _src.index("self.show()")
+_src = _inspect.getsource(app_main.MainWindow._bring_to_front)
+assert _src.index("_apply_capture_immunity") < _src.index("showNormal()")
+_src = _inspect.getsource(app_main.MainWindow._select_region)
+assert _src.index("set_capture_immune") < _src.index("self._selector.show()")
+# 旧自动模式残留链路的 show 同样先补隐身
+for _m in ("_auto_click", "_auto_after_clicks"):
+    _src = _inspect.getsource(getattr(app_main.MainWindow, _m))
+    assert _src.index("_apply_capture_immunity") < _src.index("self.show()"), _m
+print("✓ v2.6.2：先设隐身再显示（全生命周期无暴露窗口期）就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)
