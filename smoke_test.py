@@ -1045,6 +1045,26 @@ _dlg.auto_interval.setValue(30)
 _dlg.close()
 print("✓ v2.7：答题自动模式（激活即识别/去重跳过/托盘暂停/间隔配置）就位")
 print("✓ v2.7.1：双图判重（SAME 保持旧答案）+ 失败重试回滚就位")
+
+# v2.7.2 回归：全新安装（打包版 + %LOCALAPPDATA%\答题助手\ 目录不存在）首次保存不得 ENOENT
+_orig_frozen = getattr(sys, "frozen", None)
+_orig_lad = os.environ.get("LOCALAPPDATA")
+_tmp_lad = tempfile.mkdtemp(prefix="fresh_install_")
+sys.frozen = True
+os.environ["LOCALAPPDATA"] = _tmp_lad
+try:
+    config.AppConfig({}).save()
+    assert os.path.isfile(os.path.join(_tmp_lad, "答题助手", "config.json"))
+finally:
+    if _orig_frozen is None:
+        del sys.frozen
+    else:
+        sys.frozen = _orig_frozen
+    if _orig_lad is None:
+        os.environ.pop("LOCALAPPDATA", None)
+    else:
+        os.environ["LOCALAPPDATA"] = _orig_lad
+print("✓ v2.7.2：全新安装首次保存配置（自动建配置目录）就位")
 print("✓ 全部冒烟测试通过")
 
 QTimer.singleShot(100, app.quit)

@@ -187,11 +187,16 @@ def config_dir() -> str:
         # 配置放到用户级稳定目录 %LOCALAPPDATA%\答题助手\，并从旧位置迁移一次。
         root = os.path.join(
             os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "答题助手")
+        # 目录必须始终存在：全新安装时没有旧配置可迁移，
+        # 不主动建目录会导致首次保存 config.json 直接 ENOENT
+        try:
+            os.makedirs(root, exist_ok=True)
+        except OSError:
+            pass
         old = os.path.join(os.path.dirname(sys.executable), "config.json")
         new = os.path.join(root, "config.json")
         if not os.path.exists(new) and os.path.exists(old):
             try:
-                os.makedirs(root, exist_ok=True)
                 import shutil
                 shutil.copy2(old, new)
             except OSError:
@@ -234,5 +239,7 @@ class AppConfig:
             return cls({})
 
     def save(self):
+        # 兜底建目录：目录被用户手动删掉等极端情况下也不应保存失败
+        os.makedirs(os.path.dirname(config_path()), exist_ok=True)
         with open(config_path(), "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
